@@ -12,8 +12,8 @@ import logging
 import threading
 import struct
 import cPickle
-import PAFClient
 import copy
+import PAFClient
 
 class PAFServer():
   def __init__(self, obj, workcount):
@@ -24,7 +24,7 @@ class PAFServer():
     self.connections = {}
     self.requests_buffer = {}
 
-    #客户端为了在服务代码中调用其它服务
+    #客户端,供服务对象调用其它服务使用
     self.client = PAFClient.PAFClient()
 
     #服务对象
@@ -176,6 +176,15 @@ class WorkThread(threading.Thread):
   def run(self):
     obj = copy.deepcopy(self.obj)
     obj.setServer(self.server)
+
+    #如果存在init函数，调用
+    try:
+      if not obj.init():
+        print("obj init error")
+        exit(0)
+    except BaseException, e:
+      pass
+
     while True:
       try:
         if self.server.condition.acquire():
@@ -191,6 +200,8 @@ class WorkThread(threading.Thread):
             #if item["connection"] =  
             request = cPickle.loads(item["data"])
             pargma = cPickle.loads(request["data"])
+            pargma = list(pargma)
+            pargma.append(item)
 
             response = {}
             response["requestid"] = request["requestid"]
@@ -205,6 +216,7 @@ class WorkThread(threading.Thread):
             except BaseException, e:
               response["return"] = -1
               response["message"] = str(e)
+              print "call exception " + str(e)
 
             response["result"] = cPickle.dumps(result)
             temp_data = cPickle.dumps(response)
@@ -218,17 +230,16 @@ class WorkThread(threading.Thread):
 
 
 if __name__ == "__main__":
-  #####远程调用对象,需要与client中的对象对应
-  #TODO:根据这个类自动生成对应的client对象
   #类实现限制:
   #1.所有参数都为输入参数，不能做为输出,输出通过返回值获得
   #2.函数返回None表示不需要给客户端返回数据
   #3.需要实现setserver接口
+  #4.所有对外提供的接口需要以current参数为最后一个参数,这个参数为系统使用,不是接口参数
   class Test():
     def setServer(self, server):
       self.server = server
 
-    def sayHello(self, data, data2):
+    def sayHello(self, data, data2, current):
       data = "hello" + data + data2
       result = dict()
       result["result"] = 1

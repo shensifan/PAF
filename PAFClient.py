@@ -26,6 +26,8 @@ class PAFClient():
     #到其它服务的链接
     #self.proxy["server_name"][(ip, port)] = proxy
     self.proxy = {}
+    self.server_name = {}
+    self.endpoint = {}
     self.response_buffer = {}
 
     self.epoll = select.epoll()
@@ -61,6 +63,12 @@ class PAFClient():
   def getRequestId(self):
     self.requestid += 1
     return self.requestid
+
+
+  def releaes_proxy(self, fileno):
+    del self.proxy[self.server_name[fileno]][self.endpoint[fileno]]
+    del self.server_name[fileno]
+    del self.endpoint[fileno]
 
 
   def put2Queue(self, request_id):
@@ -124,7 +132,7 @@ class PAFClient():
       self.proxy[name] = {}
 
     if not self.proxy[name].has_key(endpoint):
-      self.proxy[name][endpoint] = ServerProxy(self, endpoint)
+      self.proxy[name][endpoint] = ServerProxy(self, name, endpoint)
 
     return self.proxy[name][endpoint]
 
@@ -142,8 +150,9 @@ class _Method:
 
 
 class ServerProxy:
-  def __init__(self, client, endpoint):
+  def __init__(self, client, name, endpoint):
     self.client = client
+    self.endpoint = endpoint
     self.connect = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     self.connect.connect(endpoint)
     self.connect.setblocking(0)
@@ -151,6 +160,11 @@ class ServerProxy:
     self.client.connections[self.connect.fileno()] = self.connect
     self.client.response_buffer[self.connect.fileno()] = ""
     self.client.epoll.register(self.connect.fileno(), select.EPOLLIN)
+
+    self.lock = threading.Lock()
+
+    self.client.server_name[self.connect.fileno()] = name
+    self.client.endpoint[self.connect.fileno()] = endpoint
 
 
   def __request(self, methodname, params):
@@ -179,7 +193,16 @@ class ServerProxy:
       self.client.addRequest(requestid, None)
     else:
       self.client.addRequest(requestid, callback)
-    self.connect.send(finaldata)
+    
+    #加锁,保证发送数据报的完整
+    while True:
+      try:
+        self.lock.acquire()
+        self.connect.send(finaldata)
+        self.lock.release()
+        break
+      except BaseException, e:
+        print "send exception : " + str(e)
 
     if async: #异步调用
       return True
@@ -188,6 +211,7 @@ class ServerProxy:
       if self.client.request[requestid]["return"] < 0:
         msg = self.client.request[requestid]["message"]
         del self.client.request[requestid]
+        #TODO:这里需要改一下,不只是NameError
         raise NameError, msg
       result = cPickle.loads(self.client.request[requestid]["data"])
       del self.client.request[requestid]
@@ -210,6 +234,7 @@ class EventThread(threading.Thread):
     self.client.connections[fileno].close()
     del self.client.connections[fileno]
     del self.client.response_buffer[fileno]
+    self.client.releaes_proxy(fileno)
     print("%d closed" % fileno)
 
 
@@ -281,7 +306,7 @@ class CallBackThread(threading.Thread):
             continue
 
           request = self.client.request[item]
-          if request["callback"] == None: #同步调用
+          if request["callback"] == None: #同步调用,也可能是单向调用,不需要返回
             request["lock"].release()
           else:   #异步调用
             if request["return"] < 0:
