@@ -1,10 +1,5 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-  
-#TODO:没有超时处理,超时的请求会一直收不到回复
-#     如果是同步线程会卡死同步线程
-#     如果是异步线程会多占用一定内存,request一直不能清除
-#     当链接断开时需要解锁上面已经发出的请求
-#     加入重连机制
 import os
 import sys
 import socket
@@ -12,30 +7,54 @@ import select
 import Queue
 import thread
 import time
-import logging
 import struct
 import cPickle
-import inspect
 import threading
-import copy
+import random
+import traceback
+sys.path.insert(0, "%s/.." % os.path.dirname(__file__))
+import Util
 
 class PAFClient():
-  def __init__(self, callbackcount = 3):
+  def __init__(self, callbackcount = 3, timeout = 60):
+    #self.requestid = random.randrange(0,1000000000)
     self.requestid = 0
 
-    #到其它服务的链接
+    self.log = Util.Log(logfile="PAFClient.log", prefix = "PAFClient")
+
     #self.proxy["server_name"][(ip, port)] = proxy
     self.proxy = {}
-    self.server_name = {}
-    self.endpoint = {}
+    #self.connections[fileno] = proxy
+    self.connections = {}
+    #self.response_buffer[fileno] = ""
     self.response_buffer = {}
 
     self.epoll = select.epoll()
 
-    #请求字典
-    #self.request[requestid] = 
+    #response返回错误码,需要与PAFServer对应
+    self.RESPONSE = dict()
+    self.RESPONSE["E_OK"] = 0
+    self.RESPONSE["E_CLOSE"] = -1 #标识需要断开链接
+    self.RESPONSE["E_TIMEOUT"] = -2 #超时
+    self.RESPONSE["E_CONNECTRESET"] = -3 #链接断开
+    self.RESPONSE["E_UNKNOWN"] = -99  #不可知错误
+
+    #超时时间30秒
+    self.timeout = timeout
+
+    #同步请求使用的等待锁
+    #self.request[requestid]["lock"] = threading.Lock()
+    #请求所在链接
+    #self.request[requestid]["connect"] = fileno
+    #请求发送时间
+    #self.request[requestid]["time"] = int(time.time())
+    #异步回调函数
+    #self.request[requestid]["callback"] = callback
+    #请求返回,用于异步
+    #self.request[requestid]["return"] = 0
+    #self.request[requestid]["message"] = ""
+    #self.request[requestid]["result"] = None
     self.request = {}
-    self.connections = {}
 
     #事件线程与回调线程队列
     self.response_queue = Queue.Queue(maxsize = 10000)
@@ -64,70 +83,69 @@ class PAFClient():
     self.requestid += 1
     return self.requestid
 
-
-  def releaes_proxy(self, fileno):
-    del self.proxy[self.server_name[fileno]][self.endpoint[fileno]]
-    del self.server_name[fileno]
-    del self.endpoint[fileno]
-
-
-  def put2Queue(self, request_id):
+  def put2Queue(self, requestid):
     try:
       self.queue_lock.acquire()
     except BaseException, e:
-      print("require lock error" + str(e))
+      self.log.Print("require lock error" + str(e))
       return -1
     
-    ret = 0
     try:
-      self.response_queue.put(request_id)
+      self.response_queue.put(requestid)
     except BaseException, e:
-      print("put2Queue " + str(e))
-      ret = -1
+      self.log.Print("put2Queue " + str(e))
+      return -1
+    finally:
+      self.queue_lock.release()
 
-    self.queue_lock.release()
-    return ret
+    return 0
 
 
   def getFromQueue(self):
     try:
       self.queue_lock.acquire()
     except BaseException, e:
-      print("require lock error" + str(e))
+      self.log.Print("require lock error" + str(e))
       return None
     
     data = None
     try:
       if not self.response_queue.empty():
-        data = self.response_queue.get()
+        return self.response_queue.get()
     except BaseException, e:
-      print("getFromQueue error" + str(e))
+      self.log.Print("getFromQueue error" + str(e))
+      return None
+    finally:
+      self.queue_lock.release()
 
-    self.queue_lock.release()
-    return data
+    return None
 
 
-  def addRequest(self, requestId, callback):
+  def addRequest(self, fileno, requestid, callback):
     """ 异步发送请求,把相关信息加入字典,返回时使用 """
     try:
-      item = dict()
-      item["lock"] = threading.Lock()
-      item["lock"].acquire()
-      item["callback"] = callback
-      item["data"] = None
-      item["return"] = 0
-      item["message"] = ""
-      self.request[requestId] = item
+      self.request[requestid] = dict()
+      if callback == None: #同步调用
+        self.request[requestid]["lock"] = threading.Lock()
+        self.request[requestid]["lock"].acquire()
+      else:
+        self.request[requestid]["lock"] = None
+
+      self.request[requestid]["connect"] = fileno
+      self.request[requestid]["time"] = int(time.time())
+      self.request[requestid]["callback"] = callback
+
+      self.request[requestid]["return"] = -99
+      self.request[requestid]["message"] = ""
+      self.request[requestid]["result"] = None
     except BaseException, e:
-      print("addRequest " + str(e))
+      self.log.Print("addRequest " + str(e))
       return -1
 
     return 0
 
 
   def createProxy(self, name, endpoint):
-    #TODO:当endpoint为None随机返回一个
-    #会抛出异常
     if not self.proxy.has_key(name):
       self.proxy[name] = {}
 
@@ -152,22 +170,45 @@ class _Method:
 class ServerProxy:
   def __init__(self, client, name, endpoint):
     self.client = client
+    self.name = name
     self.endpoint = endpoint
-    self.connect = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    self.connect.connect(endpoint)
-    self.connect.setblocking(0)
+    self.old_fileno = -1
 
-    self.client.connections[self.connect.fileno()] = self.connect
-    self.client.response_buffer[self.connect.fileno()] = ""
-    self.client.epoll.register(self.connect.fileno(), select.EPOLLIN)
+    self.has_connect = False
 
-    self.lock = threading.Lock()
+    #用于控制只有一个线程发送数据
+    self.send_lock = threading.Lock()
 
-    self.client.server_name[self.connect.fileno()] = name
-    self.client.endpoint[self.connect.fileno()] = endpoint
+
+  def _connect(self):
+    if self.has_connect == True:
+      return 0
+
+    if self.old_fileno > 0:
+      del self.client.response_buffer[self.old_fileno]
+      del self.client.connections[self.old_fileno]
+
+    try:
+      self.connect = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+      self.connect.connect(self.endpoint)
+      self.connect.setblocking(0)
+
+      self.client.response_buffer[self.connect.fileno()] = ""
+      self.client.connections[self.connect.fileno()] = self
+      self.client.proxy[self.name][self.endpoint] = self
+      self.old_fileno = self.connect.fileno()
+      self.client.epoll.register(self.connect.fileno(), select.EPOLLIN)
+    except BaseException, e:
+      self.has_connect = False
+      raise e
+
+    self.has_connect = True
+    return 0
 
 
   def __request(self, methodname, params):
+    self._connect()
+
     name = methodname
     async = False
 
@@ -182,7 +223,7 @@ class ServerProxy:
     request = {}
     request["requestid"] = requestid
     request["fun"] = name
-    request["data"] = cPickle.dumps(params)
+    request["pargma"] = params
 
     temp_data = cPickle.dumps(request)
 
@@ -190,37 +231,42 @@ class ServerProxy:
     finaldata = struct.pack("@I", length)
     finaldata += temp_data
     if not async:
-      self.client.addRequest(requestid, None)
+      self.client.addRequest(self.connect.fileno(), requestid, None)
     else:
-      self.client.addRequest(requestid, callback)
+      self.client.addRequest(self.connect.fileno(), requestid, callback)
     
     #加锁,保证发送数据报的完整
-    while True:
-      try:
-        self.lock.acquire()
-        self.connect.send(finaldata)
-        self.lock.release()
-        break
-      except BaseException, e:
-        print "send exception : " + str(e)
-
+    self.send_lock.acquire()
+    try:
+      self.connect.sendall(finaldata)
+    except BaseException, e:
+      self.client.log.Print("send error %s" % str(e))
+      #重连后重新发送一次
+      self.has_connect = False
+      self._connect()
+      self.connect.sendall(finaldata)
+    finally:
+      self.send_lock.release()
+    
     if async: #异步调用
       return True
-    else:#同步调用
-      self.client.request[requestid]["lock"].acquire()
+    
+    #同步调用,等待解锁
+    self.client.request[requestid]["lock"].acquire()
+
+    try:
+      #调用出错
       if self.client.request[requestid]["return"] < 0:
         msg = self.client.request[requestid]["message"]
-        del self.client.request[requestid]
-        #TODO:这里需要改一下,不只是NameError
-        raise NameError, msg
-      result = cPickle.loads(self.client.request[requestid]["data"])
-      del self.client.request[requestid]
+        raise BaseException, msg
 
-    return result
+      #正常返回
+      return self.client.request[requestid]["result"]
+    finally:
+      del self.client.request[requestid]
 
 
   def __getattr__(self, name):
-    #print "name="+name
     return _Method(self.__request, name)
 
 
@@ -229,58 +275,105 @@ class EventThread(threading.Thread):
   def setClient(self, client):
     self.client = client
 
+
   def _CloseConnect(self, fileno):
+    if not self.client.connections.has_key(fileno):
+      self.client.log.Print("%d has closed" % fileno)
+      return
+
     self.client.epoll.unregister(fileno)
-    self.client.connections[fileno].close()
+    #只是把proxy设置为断开链接,并没有删除
+    self.client.connections[fileno].has_connect = False
     del self.client.connections[fileno]
     del self.client.response_buffer[fileno]
-    self.client.releaes_proxy(fileno)
-    print("%d closed" % fileno)
+    self.client.log.Print("%d closed" % fileno)
+
+
+  def _timeOut(self):
+    """ 处理request超时 """
+    now = int(time.time())
+    for requestid in self.client.request:
+      if self.client.request[requestid]["return"] != -99: #已经在处理这个请求了,不要再处理了
+        continue
+
+      try:
+        c = self.client.request[requestid]["connect"] 
+        t = self.client.request[requestid]["time"]
+
+        delete = False
+        if not self.client.connections.has_key(c):
+          self.client.request[requestid]["return"] = self.client.RESPONSE["E_CONNECTRESET"]
+          self.client.request[requestid]["message"] = "connect reset"
+          self.client.log.Print("connect has gone del request %d" % requestid)
+          delete = True
+
+        if (now - t) > self.client.timeout:
+          self.client.request[requestid]["return"] = self.client.RESPONSE["E_TIMEOUT"]
+          self.client.request[requestid]["message"] = "request time out" 
+          self.client.log.Print("connect has timeout del request %d" % requestid)
+          delete = True
+
+        if delete == False:
+          return
+
+        self.client.put2Queue(requestid)
+        #通知回调线程
+        self.client.condition.acquire()
+        self.client.condition.notify()
+        self.client.condition.release()
+      except BaseException, e:
+        self.client.log.Print("time out exception " + str(e))
 
 
   def run(self):
     while True:
-        events = self.client.epoll.poll(100)
-        for fileno, event in events:
-          try:
-            if event & select.EPOLLIN: #数据信息
-              msg = self.client.connections[fileno].recv(65535)
+      self._timeOut()
 
-              if len(msg) <= 0:#链接断开
-                self._CloseConnect(fileno)
-                continue
+      events = self.client.epoll.poll(0.100)
+      for fileno, event in events:
+        try:
+          if event & select.EPOLLIN: #数据信息
+            msg = self.client.connections[fileno].connect.recv(10 * 1024)
 
-              self.client.response_buffer[fileno] += msg
-              #数据分包
-              while True:
-                if len(self.client.response_buffer[fileno]) <= 4:
-                  break
-                #读取前四字节,包长度
-                length = struct.unpack("@I", self.client.response_buffer[fileno][0:4])[0]
-                if len(self.client.response_buffer[fileno]) < 4 + length:
-                  break
+            if len(msg) <= 0:#链接断开
+              self._CloseConnect(fileno)
+              continue
 
-                response = cPickle.loads(self.client.response_buffer[fileno][4:(length+4)])
-                requestid = response["requestid"]
+            self.client.response_buffer[fileno] += msg
+            #数据分包
+            while True:
+              if len(self.client.response_buffer[fileno]) <= 4:
+                break
+              #读取前四字节,包长度
+              length = struct.unpack("@I", self.client.response_buffer[fileno][0:4])[0]
+              if len(self.client.response_buffer[fileno]) < 4 + length:
+                break
+
+              response = cPickle.loads(self.client.response_buffer[fileno][4:(length+4)])
+              requestid = response["requestid"]
+              #可能已经被超时删除了
+              if self.client.request.has_key(requestid):
                 self.client.request[requestid]["return"] = response["return"]
                 if response["return"] < 0:
                   self.client.request[requestid]["message"] = response["message"]
                 else:
-                  self.client.request[requestid]["data"] = response["result"]
+                  self.client.request[requestid]["result"] = response["result"]
                 self.client.put2Queue(requestid)
-                self.client.response_buffer[fileno] = self.client.response_buffer[fileno][4+length:]
 
-                #通知回调线程
-                while True:
-                  if self.client.condition.acquire():
-                    self.client.condition.notify()
-                    self.client.condition.release()
-                    break
-            elif evnet & select.EPOLLHUP: #链接断开
-              self._CloseConnect(fileno)
-          except BaseException, e:
+              self.client.response_buffer[fileno] = self.client.response_buffer[fileno][4+length:]
+
+              #通知回调线程
+              self.client.condition.acquire()
+              self.client.condition.notify()
+              self.client.condition.release()
+
+          if event & select.EPOLLHUP: #链接断开
             self._CloseConnect(fileno)
-            print "Event thread error " + str(e)
+
+        except BaseException, e:
+          self._CloseConnect(fileno)
+          traceback.print_exc()
+          self.client.log.Print("Event thread error " + str(e))
 
 
 
@@ -292,30 +385,36 @@ class CallBackThread(threading.Thread):
   def run(self):
     while True:
       try:
-        if self.client.condition.acquire():
-          self.client.condition.wait()
-          self.client.condition.release()
+        self.client.condition.acquire()
+        self.client.condition.wait()
+        self.client.condition.release()
+      except BaseException, e:
+        self.client.log.Print("callback thread condition error " + str(e))
+        continue
           
-        while True:
-          item = self.client.getFromQueue()
-          if item == None:
-            break
+      while True:
+        item = self.client.getFromQueue()
+        if item == None:
+          break
 
-          if not self.client.request.has_key(item):
-            print "this request has gone"
+        if not self.client.request.has_key(item):
+          self.client.log.Print("this request has gone")
+          del self.client.request[item]
+          continue
+
+        try:
+          request = self.client.request[item]
+
+          #同步调用
+          if request["callback"] == None: 
+            request["lock"].release()
             continue
 
-          request = self.client.request[item]
-          if request["callback"] == None: #同步调用,也可能是单向调用,不需要返回
-            request["lock"].release()
-          else:   #异步调用
-            if request["return"] < 0:
-              request["callback"].callback((request["return"], request["message"]), None)
-            else:
-              request["callback"].callback((request["return"], request["message"]), cPickle.loads(request["data"]))
-      except BaseException, e:
-        print "callback thread error " + str(e)
-
+          #异步调用
+          request["callback"].callback((request["return"], request["message"]), request["result"])
+          del self.client.request[item]
+        except BaseException, e:
+          self.client.log.Print("callback thread error " + str(e))
 
 
 if __name__ == "__main__":
@@ -338,14 +437,13 @@ if __name__ == "__main__":
       else:
         print result
 
-  client = PAFClient()
+  client = PAFClient(timeout=3)
   #createProxy 可能会抛出异常
   try:
     t = client.createProxy("test", ('127.0.0.1', 8412))
   except BaseException, e:
     print str(e)
     exit(0)
-
   try:
     print t.nofun(" world")
   except BaseException, e:
@@ -362,19 +460,33 @@ if __name__ == "__main__":
     print str(e)
 
   try:
-    print t.async_nofun(" world", callback_sayHello())
+    t.async_nofun(" world", callback_sayHello())
   except BaseException, e:
     print str(e)
 
   try:
-    print t.async_sayHello(" world", callback_sayHello())
+    t.async_sayHello(" world", callback_sayHello())
   except BaseException, e:
     print str(e)
 
   try:
-    print t.async_sayHello(" world", " async", callback_sayHello())
+    t.async_sayHello(" world", " async", callback_sayHello())
   except BaseException, e:
     print str(e)
+
+  try:
+    t.testTimeout()
+  except BaseException, e:
+    print str(e)
+
+  try:
+    t.throwException()
+  except BaseException, e:
+    print str(e)
+
+
+
+
 
   #要等待异步返回
   try:
