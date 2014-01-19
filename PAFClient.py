@@ -12,7 +12,6 @@ import cPickle
 import threading
 import random
 import traceback
-sys.path.insert(0, "%s/.." % os.path.dirname(__file__))
 import Util
 
 class PAFClient():

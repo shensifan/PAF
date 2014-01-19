@@ -14,7 +14,6 @@ import cPickle
 import copy
 import PAFClient
 import traceback
-sys.path.insert(0, "%s/.." % os.path.dirname(__file__))
 import Util
 
 class PAFServer():
