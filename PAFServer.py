@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-  
-#TODO:正常退出机制
+#TODO:只处理TCP
 import os
 import sys
 import socket
@@ -14,12 +14,13 @@ import cPickle
 import copy
 import PAFClient
 import traceback
+sys.path.insert(0, "%s/.." % os.path.dirname(__file__))
 import Util
 
 class PAFServer():
   def __init__(self, obj, workcount):
     try:
-      self.log = Util.Log(logfile="PAFServer.log", prefix = "PAFServer")
+      self.log = Util.Log(prefix = "PAFServer")
 
       self.epoll = select.epoll()
 
@@ -37,7 +38,7 @@ class PAFServer():
       self.requests_buffer = {}
 
       #客户端,供服务对象调用其它服务使用
-      self.client = PAFClient.PAFClient(5)
+      self.client = PAFClient.PAFClient(50)
 
       #服务对象
       self.obj = obj
@@ -50,6 +51,9 @@ class PAFServer():
       #工作线与主线程程通信队列
       self.response_queue = Queue.Queue(maxsize = 100000)
       self.response_lock = threading.Lock()
+
+      #是否退出
+      self.termination = False
       
       #工作线程
       self.workers = []
@@ -80,10 +84,8 @@ class PAFServer():
 
 
   def addRequest(self, fileno, data):
-    try:
-      self.request_lock.acquire()
-    except BaseException, e:
-      self.log.Print("require lock error" + str(e))
+    if not self.request_lock.acquire():
+      self.log.Print("require request lock error" + str(e))
       return -1
     
     try:
@@ -99,7 +101,7 @@ class PAFServer():
       item["requestid"] = request["requestid"]
       item["fun"] = request["fun"]
       current = dict()
-      current.update(current)
+      current.update(item)
       item["pargma"] = list(request["pargma"])
       item["pargma"].append(current)
       self.request_queue.put(item)
@@ -114,11 +116,9 @@ class PAFServer():
 
 
   def getRequest(self):
-    try:
-      self.request_lock.acquire()
-    except BaseException, e:
-      self.log.Print("require lock error" + str(e))
-      return None
+    if not self.request_lock.acquire():
+      self.log.Print("require request lock error" + str(e))
+      return -1
     
     try:
       if not self.request_queue.empty():
@@ -133,10 +133,8 @@ class PAFServer():
 
 
   def addResponse(self, fileno, requestid, ret, message, result):
-    try:
-      self.response_lock.acquire()
-    except BaseException, e:
-      self.log.Print("require lock error" + str(e))
+    if not self.response_lock.acquire():
+      self.log.Print("require response lock error" + str(e))
       return -1
     
     try:
@@ -157,10 +155,8 @@ class PAFServer():
 
 
   def getResponse(self):
-    try:
-      self.response_lock.acquire()
-    except BaseException, e:
-      self.log.Print("require lock error" + str(e))
+    if not self.response_lock.acquire():
+      self.log.Print("require response lock error" + str(e))
       return None
     
     try:
@@ -192,7 +188,8 @@ class PAFServer():
       connection.setblocking(0)
       self.epoll.register(connection.fileno(), select.EPOLLIN)
       self.connections[connection.fileno()] = connection
-      self.requests_buffer[connection.fileno()] = b''
+      #self.requests_buffer[connection.fileno()] = b''
+      self.requests_buffer[connection.fileno()] = ''
       self.log.Print("new connect %d from %s" % (connection.fileno(), str(address)))
     except BaseException, e:
       self.log.Print("accept error " + str(e))
@@ -230,24 +227,27 @@ class PAFServer():
       if item == None:
         return 0
 
-      if item["result"] == self.RESPONSE["E_CLOSE"]:
+      if item["return"] == self.RESPONSE["E_CLOSE"]:
         self._CloseConnect(item["connection"])
 
       if not self.connections.has_key(item["connection"]):
         self.log.Print("%d connect has gone" % item["connection"])
         continue
 
-      try:
-        temp_data = cPickle.dumps(item)
-        length = len(temp_data)
-        finaldata = struct.pack("@I", length)
-        finaldata += temp_data
-        self.connections[item["connection"]].sendall(finaldata)
-      except BaseException, e:
-        if e[0] == 104: #链接已经断开
-          self._CloseConnect(item["connection"])
-        self.log.Print("send error %s" % str(e))
-        continue
+      temp_data = cPickle.dumps(item)
+      length = len(temp_data)
+      finaldata = struct.pack("@I", length)
+      finaldata += temp_data
+      send_len = 0
+      while send_len < len(finaldata):
+        try:
+          send_len += self.connections[item["connection"]].send(finaldata[send_len:])
+        except BaseException, e:
+          if e[0] == 104: #链接已经断开
+            self.log.Print("connect has disconnection")
+            self._CloseConnect(item["connection"])
+            break
+          time.sleep(0.01)
 
 
   def start(self):
@@ -264,11 +264,24 @@ class PAFServer():
     while True:
       #处理需要返回的数据
       self._response()
+      
+      #退出
+      if self.termination:
+        index = 0
+        while index < self.work_count:
+          self.workers[index].join()
+          index += 1
+
+        break
 
       try:
         events = self.epoll.poll(0.100)
+      except KeyboardInterrupt:
+        self.termination = True
+        continue
       except BaseException, e:
-        self.log.Print("epoll error " + str(e))
+        #self.log.Print("epoll error " + str(e))
+        #traceback.print_exc()
         time.sleep(0.010)
         continue
 
@@ -283,9 +296,9 @@ class PAFServer():
 
           #通知工作线程
           try:
-            self.request_condition.acquire()
-            self.request_condition.notifyAll()
-            self.request_condition.release()
+            if self.request_condition.acquire():
+              self.request_condition.notifyAll()
+              self.request_condition.release()
           except BaseException, e:
             self.log.Print("notify to work thread error " + str(e))
 
@@ -313,14 +326,12 @@ class WorkThread(threading.Thread):
     except BaseException, e:
       pass
 
-    while True:
-      try:
-        self.server.request_condition.acquire()
-        self.server.request_condition.wait()
-        self.server.request_condition.release()
-      except BaseException, e:
-        self.server.log.Print("condition wait error " + str(e))
+    while not self.server.termination:
+      if not self.server.request_condition.acquire():
         continue
+
+      self.server.request_condition.wait(0.1)
+      self.server.request_condition.release()
 
       while True:
         item = self.server.getRequest()
@@ -330,6 +341,7 @@ class WorkThread(threading.Thread):
         try:
           method = getattr(obj, item["fun"])
         except BaseException, e:
+          self.server.log.Print("error when set method for " + item['fun'] + ': ' + str(e))
           self.server.addResponse(item["connection"], item["requestid"], self.server.RESPONSE["E_UNKNOWN"], str(e), "")
           continue
 
@@ -345,6 +357,7 @@ class WorkThread(threading.Thread):
             filename = co.co_filename
             tb = tb.tb_next
 
+          self.server.log.Print("error when call method for " + item['fun'] + ': ' + str(e))
           self.server.addResponse(item["connection"], item["requestid"], self.server.RESPONSE["E_UNKNOWN"], "%s:%d %s" % (filename, lineno, str(e)), "")
           continue
 
@@ -364,18 +377,18 @@ if __name__ == "__main__":
       self.server = server
 
     def sayHello(self, data, data2, current):
-      data = "hello" + data + data2
+      data = "%d hello" % current["requestid"] + data + data2
       result = dict()
       result["result"] = 1
       result["data"] = data
       return result
 
     def testTimeout(self, current):
-      time.sleep(5)
-      return "timeout"
+      time.sleep(5000)
+      return " %d timeout" % current["requestid"]
 
     def throwException(self, current):
-      raise BaseException, "a exception"
+      raise BaseException, "%d a exception" % current["requestid"]
 
 
   server = PAFServer(Test(), 3)
