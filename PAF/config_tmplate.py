@@ -11,14 +11,12 @@
     Date    :   2014/11/06 14:28:00
     Desc    :   template config for PAFServer
 """
-
-
-#########################
-# config template for init PAFServer
-WORKCOUNT = 2
-CALLBACKCOUNT = 20
+#工作线程数量
+WORKER_COUNT = 2
+#作为客户端时的回调线程数量
+CALLBACK_COUNT = 20
+#队列长度
 MAX_Q_SIZE = 10000000
 
-# if send log to logServer
-LOG = False
-SERVER_ADDR = ('log.bc.baidu.com', 8765)
+#
+STAT_SERVER = ('log.bc.baidu.com', 8765)
