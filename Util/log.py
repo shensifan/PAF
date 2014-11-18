@@ -3,6 +3,8 @@
 import os
 import sys
 import time
+import threading
+import pprint
 
 if __file__[-4:].lower() in ['.pyc', '.pyo']:
   _srcfile = __file__[:-4] + '.py'
@@ -10,12 +12,86 @@ else:
   _srcfile = __file__
 _srcfile = os.path.normcase(_srcfile)
 
+console_lock = threading.Lock()
+
 def currentframe():
   """Return the frame object for the caller's stack frame."""
   try:
     raise Exception
   except:
     return sys.exc_info()[2].tb_frame.f_back
+
+def colorprint(color, msg, prefix = True):
+    if prefix:
+        now = "[" + time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(time.time())) \
+            + " " + str(threading.current_thread().ident) + "] "
+    else:
+        now = ""
+    global console_lock
+    console_lock.acquire()
+    try:
+        if color == "RED":
+            print "\033[31m%s%s\033[0m" % (now, msg)
+            sys.stdout.flush()
+            return
+
+        if color == "GREEN":
+            print "\033[32m%s%s\033[0m" % (now, msg)
+            sys.stdout.flush()
+            return
+
+        if color == "YELLOW":
+            print "\033[33m%s%s\033[0m" % (now, msg)
+            sys.stdout.flush()
+            return
+
+        if color == "BLUE":
+            print "\033[34m%s%s\033[0m" % (now, msg)
+            sys.stdout.flush()
+            return
+
+        print "%s%s" % (now, msg)
+        sys.stdout.flush()
+    finally:
+        console_lock.release()
+
+
+def colorpprint(color, obj):
+    global console_lock
+    console_lock.acquire()
+    try:
+        if color == "RED":
+            print "\033[31m"
+            pprint.pprint(obj)
+            print "\033[0m"
+            sys.stdout.flush()
+            return
+
+        if color == "GREEN":
+            print "\033[32m"
+            pprint.pprint(obj)
+            print "\033[0m"
+            sys.stdout.flush()
+            return
+
+        if color == "YELLOW":
+            print "\033[33m"
+            pprint.pprint(obj)
+            print "\033[0m"
+            sys.stdout.flush()
+            return
+
+        if color == "BLUE":
+            print "\033[34m"
+            pprint.pprint(obj)
+            print "\033[0m"
+            sys.stdout.flush()
+            return
+
+        pprint.pprint(obj)
+        sys.stdout.flush()
+    finally:
+        console_lock.release()
 
 class Log():
   def __init__(self, logfile = None, prefix = None):
@@ -64,5 +140,7 @@ class Log():
         self.handle.write(msg+"\n")
       else:
         print(msg)
+        sys.stdout.flush()
     except BaseException, e:
       print(msg)
+      sys.stdout.flush()
