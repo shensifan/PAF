@@ -18,5 +18,8 @@ CALLBACK_COUNT = 20
 #队列长度
 MAX_Q_SIZE = 10000000
 
-#
+#统计服务器地址
 STAT_SERVER = ('log.bc.baidu.com', 8765)
+
+#日志服务器地址
+LOG_SERVER = None
