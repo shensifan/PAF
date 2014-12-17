@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-  
-#TODO:只处理TCP
+#TODO:目前只处理TCP
 import os
 import sys
 import socket
