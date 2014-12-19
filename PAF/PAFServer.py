@@ -22,15 +22,11 @@ import Util
 
 class PAFServer():
     def __init__(self, obj, config_file):
-    #def __init__(self, obj, workcount, callbackcount=20, max_q_size=10000000):
         try:
             self.log = Util.Log(prefix = "PAFServer")
 
-            self.config_file = config_file
-            if self.config_file.endswith('.py'):
-                self.config_file = self.config_file[:-3]
-
-            self.config = __import__(self.config_file)
+            self.config = dict()
+            execfile(config_file, dict(), self.config)
 
             self.epoll = select.epoll()
             self.setup_pipe = False
@@ -44,9 +40,12 @@ class PAFServer():
             #监听server
             self.server = None
 
+            #PAF客户端用于服务中调用其它PAF服务
+            self.client = None
+
             #所有链接
-            self.connections = {}
-            self.requests_buffer = {}
+            self.connections = dict()
+            self.requests_buffer = dict()
 
             #服务对象
             self.obj = obj
@@ -62,47 +61,131 @@ class PAFServer():
             #是否退出
             self.termination = False
 
-            self.callbackcount = self.config.CALLBACKCOUNT
-            
-            #记录当前监听地址
-            self.ip = ""
-            self.port = ""
-            
             #工作线程
-            self.workers = []
-            self.work_count = self.config.WORKCOUNT
-            index = 0
-            while index < self.config.WORKCOUNT:
-                self.workers.append(WorkThread())
-                self.workers[index].setObject(obj)
-                self.workers[index].setServer(self)
-                self.workers[index].setDaemon(True)
-                index += 1
-            self.resp = RespThread()
-            self.resp.setServer(self)
-            self.resp.setDaemon(True)
+            self.workers = list()
+            #回复线程
+            self.resp = None
+            
+            #基础服务
+            #self.log_server = None
+            self.node_server = None
+            #self.stat_server = None
         except BaseException as e:
             self.log.Print("init error " + str(e))
             exit(0)
 
-    def init(self, ip, port, stype=socket.SOCK_STREAM):
-        """
-        初始化
-        """
-        try:
-            self.ip = ip
-            self.port = port
+    def setConfig(self, conf, name, value):
+        if conf not in self.config:
+            self.config[conf] = dict()
+        self.config[conf].name = value
+        return 0
 
+    def getConfig(self, conf):
+        if conf not in self.config:
+            return None
+
+        return self.config[conf]
+
+    def _initServer(self):
+        try:
+            #工作线程
+            for index in range(0, self.config["Server"].WORK_COUNT)
+                self.workers.append(WorkThread(obj, self, self.config))
+                self.workers[index].setDaemon(True)
+            #回复线程
+            self.resp = RespThread()
+            self.resp.setServer(self)
+            self.resp.setDaemon(True)
+            
+            #监听服务
             self.server = socket.socket(socket.AF_INET, stype)
             self.server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            self.server.bind((ip, port))
+            self.server.bind((self.config["Server"].LISTEN_IP, self.config["Server"].LISTEN_PORT))
             self.server.listen(10000)
             self.server.setblocking(0)
             self.epoll.register(self.server.fileno(), \
                 select.EPOLLIN | select.EPOLLHUP | select.EPOLLERR)
         except BaseException as e:
-            self.log.Print("init error " + str(e))
-            os._exit(-1)
+            self.log.Print("init server error " + str(e))
+            return -1
+
+        return 0
+
+    def _initClient(self):
+        try:
+            #客户端,供服务对象调用其它服务使用
+            self.client = PAFClient.PAFClient(self.callbackcount, self.setup_pipe)
+        except BaseException as e:
+            self.log.Print("init client error " + str(e))
+            return -1
+
+        return 0
+
+
+    def start(self):
+        """
+        启动服务
+        """
+        if self._initClient() < 0:
+            return -1
+        self._initServer() < 0:
+            return -1
+
+        try:
+            if self.config["Server"].LOG_SERVER != None:
+                self.log_server = self.client.createProxy('LOGSERVER', self.config["Server"].LOG_SERVER)
+        except BaseException as e:
+            self.log.Print("contact logServer error")
+
+        #启动工作线程
+        try:
+            for index in range(0, self.config["Server"].WORK_COUNT)
+                self.workers[index].start()
+            self.resp.start()
+        except BaseException as e:
+            self.log.Print("start work thread error " + str(e))
+            return -1
+
+        while True:
+            if self.termination:
+                for index in range(0, self.config["Server"].WORK_COUNT)
+                    self.workers[index].join()
+                self.resp.join()
+                self.client.terminate()
+                break
+
+            try:
+                events = self.epoll.poll(2)
+            except KeyboardInterrupt:
+                self.termination = True
+                continue
+            except BaseException as e:
+                self.log.Print("epoll error " + str(e))
+                traceback.print_exc()
+                time.sleep(0.010)
+                continue
+
+            for fileno, event in events:
+                if fileno == self.server.fileno(): #监听服务信息
+                    self._accept()
+                    continue
+
+                if event & select.EPOLLIN: #数据信息
+                    if self._recv(fileno) < 0:
+                        continue
+
+                    #通知工作线程
+                    try:
+                        if self.request_condition.acquire():
+                            self.request_condition.notifyAll()
+                            self.request_condition.release()
+                    except BaseException as e:
+                        self.log.Print("notify to work thread error " + str(e))
+
+                if (event & select.EPOLLHUP) or (event & select.EPOLLERR): #链接断开
+                    Util.log.colorprint("RED", "epoll event HUP:%d ERR:%d" \
+                        % ((event & select.EPOLLHUP), (event & select.EPOLLERR)))
+                    self._CloseConnect(fileno)
 
     def addRequest(self, fileno, data):
         """
@@ -253,94 +336,17 @@ class PAFServer():
             self.log.Print("set Pipe error " + str(e))
             exit(0)
 
-    def start(self):
-        """
-        启动工作线程
-        """
-        #客户端,供服务对象调用其它服务使用
-        self.client = PAFClient.PAFClient(self.callbackcount, self.setup_pipe)
-
-        try:
-            self.log_server_alive = True
-            if self.config.LOG:
-                self.log_server = self.client.createProxy('LOGSERVER', self.config.SERVER_ADDR)
-        except BaseException as e:
-            self.log.Print("contact logServer error")
-            self.log_server_alive = False
-        #启动工作线程
-        index = 0
-        try:
-            while index < self.work_count:
-                self.workers[index].start()
-                index += 1
-            self.resp.start()
-        except BaseException as e:
-            self.log.Print("start error " + str(e))
-            exit(0)
-
-        while True:
-            #退出
-            if self.termination:
-                index = 0
-                while index < self.work_count:
-                    self.workers[index].join()
-                    index += 1
-                self.resp.join()
-                self.client.terminate()
-                break
-
-            try:
-                events = self.epoll.poll(2)
-            except KeyboardInterrupt:
-                self.termination = True
-                continue
-            except BaseException as e:
-                self.log.Print("epoll error " + str(e))
-                traceback.print_exc()
-                time.sleep(0.010)
-                continue
-
-            for fileno, event in events:
-                if fileno == self.server.fileno(): #监听服务信息
-                    self._accept()
-                    continue
-
-                if event & select.EPOLLIN: #数据信息
-                    if self._recv(fileno) < 0:
-                        continue
-
-                    #通知工作线程
-                    try:
-                        if self.request_condition.acquire():
-                            self.request_condition.notifyAll()
-                            self.request_condition.release()
-                    except BaseException as e:
-                        self.log.Print("notify to work thread error " + str(e))
-
-                if (event & select.EPOLLHUP) or (event & select.EPOLLERR): #链接断开
-                    Util.log.colorprint("RED", "epoll event HUP:%d ERR:%d" \
-                        % ((event & select.EPOLLHUP), (event & select.EPOLLERR)))
-                    self._CloseConnect(fileno)
-
 
 class WorkThread(threading.Thread):
     """
     工作线程
     """
-    def setObject(self, obj):
-        """
-        setObject
-        """
-        self.obj = obj 
+    def __init__(self, obj, server, config):
+        self.obj = obj
         self.sys_clnt_p = None
         self.cmd_clnt_p = None
-        #self.pr = cProfile.Profile()
-
-    def setServer(self, server):
-        """
-        setServer
-        """
         self.server = server
+        self.config = config
 
     def setupPipe(self):
         """
@@ -388,7 +394,7 @@ class WorkThread(threading.Thread):
                 Util.log.colorprint("RED", "self.server.request_condition.acquire fail")
                 continue
 
-            self.server.request_condition.wait(0.1)
+            self.server.request_condition.wait(1)
             self.server.request_condition.release()
 
             while True:
@@ -425,30 +431,32 @@ class WorkThread(threading.Thread):
                             (filename, lineno, str(e)), "")
                     continue
 
+                #函数返回None表示不用给客户端回复
                 if result is None:
                     continue
+
                 self.server.addResponse(item["connection"], item["requestid"], \
                     self.server.RESPONSE["E_OK"], "", result)
 
              
-                if self.server.config.LOG and self.server.log_server_alive:
-                    try:
-                        fileno = item["connection"]
-                        data = {
-                            'type':'paf',
-                            'func_name':item["fun"],
-                            'in_queue_time':'%10.6f' % item["in_queue_time"],
-                            'out_queue_time':'%10.6f' % item["out_queue_time"],
-                            'finish_time':'%10.6f' % time.time(),
-                            'server_ip':self.server.ip,
-                            'client_ip':self.server.connections[fileno].getpeername()[0]
-                            }
-
-                        self.server.log_server.async_handle_msg(data, None)
-                    except:
-                        Util.log.colorprint("RED", "fail to send log to logServer")
-                        Util.log.colorprint("RED", json.dumps(data))
-
+#                if self.server.config.LOG and self.server.log_server_alive:
+#                    try:
+#                        fileno = item["connection"]
+#                        data = {
+#                            'type':'paf',
+#                            'func_name':item["fun"],
+#                            'in_queue_time':'%10.6f' % item["in_queue_time"],
+#                            'out_queue_time':'%10.6f' % item["out_queue_time"],
+#                            'finish_time':'%10.6f' % time.time(),
+#                            'server_ip':self.server.ip,
+#                            'client_ip':self.server.connections[fileno].getpeername()[0]
+#                            }
+#
+#                        self.server.log_server.async_handle_msg(data, None)
+#                    except:
+#                        Util.log.colorprint("RED", "fail to send log to logServer")
+#                        Util.log.colorprint("RED", json.dumps(data))
+#
         #self.pr.disable()
         #s = StringIO.StringIO()
         #sortby = 'cumulative'
@@ -469,8 +477,8 @@ class RespThread(threading.Thread):
         self.server = server
         self.last_print_time = time.time()
 
-    """ 工作线程 """
     def run(self):
+        """ 工作线程 """
         while not self.server.termination:
             if not self.server.response_condition.acquire():
                 Util.log.colorprint("RED", "self.server.response_condition.acquire fail")

@@ -11,3 +11,7 @@ LISTEN_PORT = 8412
 WORKCOUNT = 30
 #回调线程数
 CALLBACKCOUNT = 30
+
+LOG = False
+PAF_LOG = False
+LOG_SERVER = ('log.bc.baidu.com', 8765)

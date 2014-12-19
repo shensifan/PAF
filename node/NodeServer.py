@@ -26,30 +26,13 @@ import pprint
 import time
 import threading
 import signal
+
 import config
 
 bcloud_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 sys.path.insert(0, bcloud_dir)
 import Util
 import PAF
-
-class ServerInfo(object):
-    def __init__(self, namespace, application = None, server = None):
-        if application is None or server is None:
-            column = re.split("\.", namespace)
-            if len(column) != 3:
-                raise Exception("bad name")
-            self.namespace = column[0]
-            self.application = column[1]
-            self.server = column[2]
-            return
-
-        self.namespace = namespace
-        self.application = application
-        self.server = server
-
-    def __str__(self):
-        return ("%s.%s.%s") % (self.namespace, self.application, self.server)
 
 def handler(signu, frame):
     try:
@@ -60,11 +43,12 @@ def handler(signu, frame):
 
 
 class ServerManager(object):
-    STAT_NONE = -1      #服务不在管理中
-    STAT_STOP = 0       #服务停止
-    STAT_STARTING = 1   #服务正在启动
-    STAT_RUN = 2        #服务正在运行
-    STAT_STOPING = 3    #服务正在停止
+    STAT_NONE = "NONE"      #服务不在管理中
+    STAT_DEPLOY = "DEPLOY"     #服务正在部署
+    STAT_STOP = "STOP"       #服务停止
+    STAT_STARTING = "STARTING"   #服务正在启动
+    STAT_RUN = "RUN"        #服务正在运行
+    STAT_STOPING = "STOPING"    #服务正在停止
 
     def __init__(self):
         #self.server[server_info]["state"]
@@ -75,7 +59,8 @@ class ServerManager(object):
         #self.server[server_info]["path"]
         self.server = dict()
         self.pids = dict()
-        self.lock = threading.lock()
+        self.stoping = dict() #保存已经发送kill信号的程序
+        self.lock = threading.Lock()
 
         signal.signal(signal.SIGCHLD, handler)
 
@@ -86,11 +71,12 @@ class ServerManager(object):
     def deploy(self, server_info):
         self.lock.acquire()
         try:
-            if server_info in self.server and self.server[server_info]["state"] != STAT_STOP:
+            if server_info in self.server and self.server[server_info]["state"] != self.STAT_STOP:
                 print "server stat is %s" % self.server[server_info]["state"]
                 return False
 
-            self.server[server_info]["state"] = STAT_STOP
+            self.server[server_info] = dict()
+            self.server[server_info]["state"] = self.STAT_DEPLOY
             self.server[server_info]["time_start"] = None
             self.server[server_info]["time_stop"] = None
             self.server[server_info]["time_heart"] = None
@@ -103,19 +89,19 @@ class ServerManager(object):
         finally:
             self.lock.release()
         
-        return STAT_NONE
+        return True
 
-    def state(self, server_info):
+    def status(self, server_info):
         self.lock.acquire()
         try:
             if server_info in self.server:
-                return self.server[server_info]["state"]
+                return self.server[server_info]
             else:
-                return STAT_NONE
+                return None
         finally:
             self.lock.release()
         
-        return STAT_NONE
+        return None
 
     def cmpAndChange(self, server_info, old_state, new_state):
         """
@@ -124,7 +110,7 @@ class ServerManager(object):
         self.lock.acquire()
         try:
             if server_info not in self.server:
-                return (STAT_NONE, STAT_NONE)
+                return (self.STAT_NONE, self.STAT_NONE)
             
             if self.server[server_info]["state"] == old_state:
                 self.server[server_info]["state"] = new_state
@@ -144,6 +130,15 @@ class ServerManager(object):
         finally:
             self.lock.release()
 
+    def stop(self, server_info, PAFServer, current):
+        self.lock.acquire()
+        try:
+            self.stoping[server_info] = dict()
+            self.stoping[server_info]["server"] = PAFServer
+            self.stoping[server_info]["current"] = current
+        finally:
+            self.lock.release()
+
     def serverStop(self, pid):
         self.lock.acquire()
         try:
@@ -154,14 +149,22 @@ class ServerManager(object):
             server_info = self.pids[pid]
             if server_info not in self.server:
                 print "no this server info"
-                return None
+                return False
             
-            self.server[server_info]["state"] = ServerManager.STAT_STOP
+            self.server[server_info]["state"] = self.STAT_STOP
             self.server[server_info]["time_stop"] = int(time.time())
             self.server[server_info]["pid"] = -1
+
+            if server_info in self.stoping:
+                s = self.stoping[server_info]["server"]
+                c = self.stoping[server_info]["current"]
+                s.addResponse(c["connection"], c["requestid"], 0, "", "OK")
+                del self.stoping[server_info]
             del self.pids[pid]
         finally:
             self.lock.release()
+
+        return True
 
     def setPid(self, server_info, pid):
         self.lock.acquire()
@@ -199,7 +202,7 @@ class Node(PAF.PAFServer.PAFServerObj):
         if old == ServerManager.STAT_NONE:
             return "no this server %s" % server_info
         if new != ServerManager.STAT_STARTING:
-            return "%s stat is %d" % (server_info, old)
+            return "%s stat is %s" % (server_info, old)
         if old == ServerManager.STAT_STARTING:
             return "%s has starting" % (server_info)
 
@@ -219,13 +222,29 @@ class Node(PAF.PAFServer.PAFServerObj):
         if old == ServerManager.STAT_NONE:
             return "no this server %s" % server_info
         if new != ServerManager.STAT_STOPING:
-            return "%s stat is %d" % (server_info, old)
+            return "%s stat is %s" % (server_info, old)
         if old == ServerManager.STAT_STOPING:
             return "%s has stoping" % (server_info)
-        os.kill(self.server[server_info]["pid"], signal.SIGINT)
+        os.kill(sm.server[server_info]["pid"], 9)
+        sm.stop(server_info, self.server, current)
+        return None
 
     def deploy(self, server_info, address, current):
-        pass
+        if not sm.deploy(server_info):
+            return "False"
+        #删除代码
+        #重新部署
+        (old, new) = sm.cmpAndChange(server_info, ServerManager.STAT_DEPLOY, ServerManager.STAT_STOP)
+        if old == ServerManager.STAT_NONE:
+            return "no this server %s" % server_info
+        if new != ServerManager.STAT_STOP:
+            return "%s stat is %s" % (server_info, old)
+        if old == ServerManager.STAT_STOP:
+            return "%s has deploy" % (server_info)
+        return "OK"
+
+    def status(self, server_info, current):
+        return sm.status(server_info)
 
     def remove(self, server_info, current):
         pass
@@ -233,11 +252,12 @@ class Node(PAF.PAFServer.PAFServerObj):
     ####################################
 
     def register(self, server_info, current):
+        print "%s register" % server_info
         (old, new) = sm.cmpAndChange(server_info, ServerManager.STAT_STARTING, ServerManager.STAT_RUN)
         if old == ServerManager.STAT_NONE:
             return "no this server %s" % server_info
         if new != ServerManager.STAT_RUN:
-            return "%s stat is %d" % (server_info, old)
+            return "%s stat is %s" % (server_info, old)
         if old == ServerManager.STAT_RUN:
             return "%s has RUN" % (server_info)
 
@@ -246,8 +266,10 @@ class Node(PAF.PAFServer.PAFServerObj):
 
 #========================================================================================================
 
-#启动server
-server = PAF.PAFServer.PAFServer(Node(), 'config.py')
-server.init(config.LISTEN_IP, config.LISTEN_PORT)
-server.setupPipe()
-server.start()
+if __name__ == "__main__":
+    sm = ServerManager()
+    #启动server
+    server = PAF.PAFServer.PAFServer(Node(), 'config.py')
+    server.init(config.LISTEN_IP, config.LISTEN_PORT)
+    server.setupPipe()
+    server.start()
