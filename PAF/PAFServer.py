@@ -18,18 +18,17 @@ import traceback
 import multiprocessing
 sys.path.insert(0, "%s/.." % os.path.dirname(__file__))
 import Util
-#import cProfile, pstats, StringIO
 
 class PAFServer():
     def __init__(self, obj, config_file):
         try:
             self.log = Util.Log(prefix = "PAFServer")
 
+            self.config_file = config_file
             self.config = dict()
             execfile(config_file, dict(), self.config)
 
             self.epoll = select.epoll()
-            self.setup_pipe = False
 
             #response返回错误码
             self.RESPONSE = dict()
@@ -71,8 +70,8 @@ class PAFServer():
             self.node_server = None
             #self.stat_server = None
         except BaseException as e:
-            self.log.Print("init error " + str(e))
-            exit(0)
+            print("init error " + str(e))
+            os._exit(0)
 
     def setConfig(self, conf, name, value):
         if conf not in self.config:
@@ -86,27 +85,45 @@ class PAFServer():
 
         return self.config[conf]
 
+    def _setupPipe(self):
+        """
+        为工作线程建立用于执行os.system,subprocess的轻量级进程
+        """
+        try:
+            for index in range(0, self.config["Server"].WORKER_COUNT):
+                self.workers[index].setupPipe()
+        except BaseException as e:
+            self.log.Print("set Pipe error " + str(e))
+            return -1
+
+        return 0
+
+
     def _initServer(self):
         try:
             #工作线程
-            for index in range(0, self.config["Server"].WORK_COUNT)
-                self.workers.append(WorkThread(obj, self, self.config))
+            for index in range(0, self.config["Server"].WORKER_COUNT):
+                self.workers.append(WorkThread(self.obj, self, self.config))
                 self.workers[index].setDaemon(True)
+            if self.config["Public"].USE_PIPE and self._setupPipe() < 0: 
+                return -1
+
             #回复线程
             self.resp = RespThread()
             self.resp.setServer(self)
             self.resp.setDaemon(True)
             
             #监听服务
-            self.server = socket.socket(socket.AF_INET, stype)
+            self.server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             self.server.bind((self.config["Server"].LISTEN_IP, self.config["Server"].LISTEN_PORT))
             self.server.listen(10000)
             self.server.setblocking(0)
             self.epoll.register(self.server.fileno(), \
                 select.EPOLLIN | select.EPOLLHUP | select.EPOLLERR)
-        except BaseException as e:
+        except Exception as e:
             self.log.Print("init server error " + str(e))
+            traceback.print_exc()
             return -1
 
         return 0
@@ -114,13 +131,27 @@ class PAFServer():
     def _initClient(self):
         try:
             #客户端,供服务对象调用其它服务使用
-            self.client = PAFClient.PAFClient(self.callbackcount, self.setup_pipe)
+            self.client = PAFClient.PAFClient(self.config_file)
         except BaseException as e:
             self.log.Print("init client error " + str(e))
             return -1
 
         return 0
 
+    def _heartBeat(self):
+        if self.node_server is None:
+            return 0
+
+        item = "%s.%s.%s" % (self.config["Server"].NAMESPACE, \
+                    self.config["Server"].APPLICATION, \
+                    self.config["Server"].SERVICE)
+        try:
+            self.register(item)
+        except BaseException as e:
+            self.log.Print("register error " + str(e))
+            return -1
+
+        return 0
 
     def start(self):
         """
@@ -128,34 +159,46 @@ class PAFServer():
         """
         if self._initClient() < 0:
             return -1
-        self._initServer() < 0:
+
+        if self._initServer() < 0:
             return -1
 
-        try:
-            if self.config["Server"].LOG_SERVER != None:
-                self.log_server = self.client.createProxy('LOGSERVER', self.config["Server"].LOG_SERVER)
-        except BaseException as e:
-            self.log.Print("contact logServer error")
+#        try:
+#            if "LOG_SERVER" in self.config["Server"] and self.config["Server"].LOG_SERVER != None:
+#                self.log_server = self.client.createProxy('LOGSERVER', self.config["Server"].LOG_SERVER)
+#        except BaseException as e:
+#            self.log.Print("no connect to LogServer")
 
-        #启动工作线程
         try:
-            for index in range(0, self.config["Server"].WORK_COUNT)
+            if "NODE_SERVER" in self.config["Server"] and self.config["Server"].NODE_SERVER != None:
+                self.node_server = self.client.createProxy('NODESERVER', self.config["Server"].NODE_SERVER)
+        except BaseException as e:
+            self.log.Print("no connect to NodeServer")
+
+        #启动工作/回复线程
+        try:
+            for index in range(0, self.config["Server"].WORKER_COUNT):
                 self.workers[index].start()
             self.resp.start()
         except BaseException as e:
             self.log.Print("start work thread error " + str(e))
             return -1
-
+        
+        time_heart = 0
         while True:
-            if self.termination:
-                for index in range(0, self.config["Server"].WORK_COUNT)
+            if int(time.time()) - time_heart > 1:
+                self._heartBeat()
+                time_heart = int(time.time())
+
+            if self.termination == True:
+                for index in range(0, self.config["Server"].WORKER_COUNT):
                     self.workers[index].join()
                 self.resp.join()
                 self.client.terminate()
                 break
 
             try:
-                events = self.epoll.poll(2)
+                events = self.epoll.poll(0.5)
             except KeyboardInterrupt:
                 self.termination = True
                 continue
@@ -288,9 +331,7 @@ class PAFServer():
             self.epoll.register(connection.fileno(), \
                 select.EPOLLIN | select.EPOLLHUP | select.EPOLLERR)
             self.connections[connection.fileno()] = connection
-            #self.requests_buffer[connection.fileno()] = b''
             self.requests_buffer[connection.fileno()] = ''
-            #self.log.Print("new connect %d from %s" % (connection.fileno(), str(address)))
         except BaseException as e:
             self.log.Print("accept error " + str(e))
 
@@ -322,26 +363,13 @@ class PAFServer():
 
         return 0
 
-    def setupPipe(self):
-        """
-        为工作线程建立用于执行os.system,subprocess的轻量级进程
-        """
-        self.setup_pipe = True
-        index = 0
-        try:
-            while index < self.work_count:
-                self.workers[index].setupPipe()
-                index += 1
-        except BaseException as e:
-            self.log.Print("set Pipe error " + str(e))
-            exit(0)
-
 
 class WorkThread(threading.Thread):
     """
     工作线程
     """
     def __init__(self, obj, server, config):
+        threading.Thread.__init__(self)
         self.obj = obj
         self.sys_clnt_p = None
         self.cmd_clnt_p = None
@@ -388,13 +416,12 @@ class WorkThread(threading.Thread):
         except BaseException as e:
             pass
 
-        #self.pr.enable()
         while not self.server.termination:
             if not self.server.request_condition.acquire():
                 Util.log.colorprint("RED", "self.server.request_condition.acquire fail")
                 continue
 
-            self.server.request_condition.wait(1)
+            self.server.request_condition.wait(0.1)
             self.server.request_condition.release()
 
             while True:
@@ -438,31 +465,6 @@ class WorkThread(threading.Thread):
                 self.server.addResponse(item["connection"], item["requestid"], \
                     self.server.RESPONSE["E_OK"], "", result)
 
-             
-#                if self.server.config.LOG and self.server.log_server_alive:
-#                    try:
-#                        fileno = item["connection"]
-#                        data = {
-#                            'type':'paf',
-#                            'func_name':item["fun"],
-#                            'in_queue_time':'%10.6f' % item["in_queue_time"],
-#                            'out_queue_time':'%10.6f' % item["out_queue_time"],
-#                            'finish_time':'%10.6f' % time.time(),
-#                            'server_ip':self.server.ip,
-#                            'client_ip':self.server.connections[fileno].getpeername()[0]
-#                            }
-#
-#                        self.server.log_server.async_handle_msg(data, None)
-#                    except:
-#                        Util.log.colorprint("RED", "fail to send log to logServer")
-#                        Util.log.colorprint("RED", json.dumps(data))
-#
-        #self.pr.disable()
-        #s = StringIO.StringIO()
-        #sortby = 'cumulative'
-        #ps = pstats.Stats(self.pr, stream=s).sort_stats(sortby)
-        #ps.print_stats()
-        #print s.getvalue()
         if self.sys_clnt_p is not None:
             self.sys_clnt_p.send("bcloud:exit")
             self.cmd_clnt_p.send("bcloud:exit")
@@ -483,7 +485,7 @@ class RespThread(threading.Thread):
             if not self.server.response_condition.acquire():
                 Util.log.colorprint("RED", "self.server.response_condition.acquire fail")
                 continue
-            self.server.response_condition.wait(1)
+            self.server.response_condition.wait(0.5)
             self.server.response_condition.release()
     
             while True:
@@ -542,7 +544,7 @@ class PAFServerObj(object):
         """
         return "pong"
 
-    def queue_len(self, current):
+    def queueLen(self, current):
         """
         获得队列长度
         """
@@ -550,6 +552,23 @@ class PAFServerObj(object):
         msg["request"] = self.server.request_queue.qsize()
         msg["response"] = self.server.response_queue.qsize()
         return msg
+
+    def setConfig(self, conf, name, value, current):
+        """
+        更新配置,目前只允许更新日志级别和私有配置 
+        TODO:因为self.conf为全局变量会影响其它线程且存在线程安全问题
+        """
+        if conf not in self.server.config:
+            self.server.config[conf] = dict()
+        if conf == "Private":
+            self.server.config[conf].name = value
+            return "OK"
+        if conf == "Server" and name == "LOG_LEVEL":
+            self.server.config[conf].name = value
+            return "OK"
+
+        return "faild not valid %s %s %s" % (conf, name, value)
+
 
 if __name__ == "__main__":
     #类实现限制:
@@ -585,5 +604,4 @@ if __name__ == "__main__":
 
 
     server = PAFServer(Test(), "config_tmplate.py")
-    server.init("127.0.0.1", 8412)
     server.start()

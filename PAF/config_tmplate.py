@@ -20,7 +20,7 @@ class Server(object):
     #服务名称
     SERVICE = "stat"
     #服务分组,服务内分组,用于区分IDC或者做set
-    GROUP = None
+    #GROUP = None
     #工作线程数量
     WORKER_COUNT = 20
     #队列长度,加入过载保护,当队列过长时丢包
@@ -29,11 +29,13 @@ class Server(object):
     #QUEUE_TIME_OUT
     #服务端口
     LISTEN_IP = "127.0.0.1"
-    LISTEN_PORT = 10000
+    LISTEN_PORT = 8412
     #本地日志路径
-    LOG_PATH = None
+    LOG_PATH = "./log"
     #远程日志服务器
     LOG_SERVER = None
+    #日志级别
+    #LOG_LEVEL = 0
     #node服务器地址,永远是127.0.0.1
     NODE_SERVER = ('127.0.0.1', 9999)
 
@@ -47,7 +49,9 @@ class Client(object):
 ################公用配置##########################
 class Public(object):
     #调用统计服务
-    STAT_SERVER = "EE.PAF.stat"
+    #STAT_SERVER = "EE.PAF.stat"
+    #使用多进程工作，多进程间使用pipe通信
+    USE_PIPE = True
 
 ################服务自身配置########################
 class Private(object):

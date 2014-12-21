@@ -26,6 +26,8 @@ import pprint
 import time
 import threading
 import signal
+import types
+import ServerInfo
 
 import config
 
@@ -67,6 +69,8 @@ class ServerManager(object):
         #所有服务的部署目录
         self.server_root = os.path.join(os.getcwd(), "services")
         Util.common.mkdirs(self.server_root)
+        self.backup_root = os.path.join(os.getcwd(), "backup")
+        Util.common.mkdirs(self.backup_root)
 
     def deploy(self, server_info):
         self.lock.acquire()
@@ -85,7 +89,8 @@ class ServerManager(object):
                                                             server_info.namespace, \
                                                             server_info.application, \
                                                             server_info.server, \
-                                                            server_info.server, "server.py")
+                                                            server_info.server, \
+                                                            server_info.server)
         finally:
             self.lock.release()
         
@@ -96,12 +101,23 @@ class ServerManager(object):
         try:
             if server_info in self.server:
                 return self.server[server_info]
-            else:
-                return None
+            status = dict()
+            status["state"] = self.STAT_NONE
+            status["time_start"] = 0
+            status["time_stop"] = 0
+            status["time_heart"] = 0
+            status["pid"] = -1
+            status["path"] = ""
+            return status
         finally:
             self.lock.release()
-        
-        return None
+    
+    def list(self):
+        self.lock.acquire()
+        try:
+            return self.server
+        finally:
+            self.lock.release()
 
     def cmpAndChange(self, server_info, old_state, new_state):
         """
@@ -143,7 +159,6 @@ class ServerManager(object):
         self.lock.acquire()
         try:
             if pid not in self.pids:
-                print "no this pid"
                 return False
 
             server_info = self.pids[pid]
@@ -198,6 +213,8 @@ class Node(PAF.PAFServer.PAFServerObj):
         return True
 
     def start(self, server_info, current):
+        if type(server_info) is types.StringType:
+            server_info = ServerInfo.ServerInfo(server_info)
         (old, new) = sm.cmpAndChange(server_info, ServerManager.STAT_STOP, ServerManager.STAT_STARTING)
         if old == ServerManager.STAT_NONE:
             return "no this server %s" % server_info
@@ -207,6 +224,9 @@ class Node(PAF.PAFServer.PAFServerObj):
             return "%s has starting" % (server_info)
 
         #启动server
+        if not os.path.exists(sm.serverFile(server_info)):
+            return "no this file %s" % sm.serverFile(server_info)
+
         pid = os.fork()
         if pid == 0:
             #execl("程序文件", argv[0], argv[1], ...)
@@ -218,6 +238,8 @@ class Node(PAF.PAFServer.PAFServerObj):
             return "OK"
 
     def stop(self, server_info, current):
+        if type(server_info) is types.StringType:
+            server_info = ServerInfo.ServerInfo(server_info)
         (old, new) = sm.cmpAndChange(server_info, ServerManager.STAT_RUN, ServerManager.STAT_STOPING)
         if old == ServerManager.STAT_NONE:
             return "no this server %s" % server_info
@@ -229,11 +251,30 @@ class Node(PAF.PAFServer.PAFServerObj):
         sm.stop(server_info, self.server, current)
         return None
 
-    def deploy(self, server_info, address, current):
+    def deploy(self, server_info, data, current):
+        if type(server_info) is types.StringType:
+            server_info = ServerInfo.ServerInfo(server_info)
         if not sm.deploy(server_info):
             return "False"
+
         #删除代码
-        #重新部署
+        deploy_path = os.path.join(self.server_root, \
+                                    server_info.namespace, \
+                                    server_info.application, \
+                                    server_info.server)
+        if os.path.exists(deploy_path):
+            backup_path = os.path.join(self.backup_root, "%s_%s.tar.bz2" % (server_info.server, time.time()))
+            os.system("cd %s;tar -cjf %s.tar.bz2 *" % (deploy_path, backup_path))
+            os.system("rm -rf %s/*" % deploy_path)
+        else:
+            Util.common.mkdirs(deploy_path)
+        
+        #解压服务,重新部署
+        with open("%s/%s.tar.bz2" % (deploy_path, server_info.server)) as f:
+            f.write(data)
+        os.system("cd %s;tar -xjf %s.tar.bz2 *" % (deploy_path, server_info.server))
+
+        #更新状态
         (old, new) = sm.cmpAndChange(server_info, ServerManager.STAT_DEPLOY, ServerManager.STAT_STOP)
         if old == ServerManager.STAT_NONE:
             return "no this server %s" % server_info
@@ -244,7 +285,12 @@ class Node(PAF.PAFServer.PAFServerObj):
         return "OK"
 
     def status(self, server_info, current):
+        if type(server_info) is types.StringType:
+            server_info = ServerInfo.ServerInfo(server_info)
         return sm.status(server_info)
+
+    def list(self, current):
+        return sm.list()
 
     def remove(self, server_info, current):
         pass
@@ -252,7 +298,8 @@ class Node(PAF.PAFServer.PAFServerObj):
     ####################################
 
     def register(self, server_info, current):
-        print "%s register" % server_info
+        if type(server_info) is types.StringType:
+            server_info = ServerInfo.ServerInfo(server_info)
         (old, new) = sm.cmpAndChange(server_info, ServerManager.STAT_STARTING, ServerManager.STAT_RUN)
         if old == ServerManager.STAT_NONE:
             return "no this server %s" % server_info
@@ -270,6 +317,4 @@ if __name__ == "__main__":
     sm = ServerManager()
     #启动server
     server = PAF.PAFServer.PAFServer(Node(), 'config.py')
-    server.init(config.LISTEN_IP, config.LISTEN_PORT)
-    server.setupPipe()
     server.start()

@@ -16,17 +16,15 @@ import traceback
 import pprint
 import time
 
-import ServerInfo
-
 bcloud_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 sys.path.insert(0, bcloud_dir)
 import Util
 import PAF
 
-item = ServerInfo.ServerInfo("EE.PAF.test")
+item = "EE.PAF.test"
 
-client = PAF.PAFClient.PAFClient()
-t = client.createProxy("test", ('127.0.0.1', 8412))
+client = PAF.PAFClient.PAFClient("config.py")
+t = client.createProxy("test", ('127.0.0.1', 9999))
 
 print sys.argv[1]
 
@@ -42,4 +40,4 @@ if sys.argv[1] == "start":
 if sys.argv[1] == "stop":
     pprint.pprint("stop " + t.stop(item))
 
-time.sleep(1)
+client.terminate()

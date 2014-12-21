@@ -19,80 +19,89 @@ sys.path.insert(0, "%s/.." % os.path.dirname(__file__))
 import Util
 
 class PAFClient():
-    def __init__(self, callbackcount=10, setup_pipe=False):
-        self.requestid_prefix = str(socket.gethostbyname(socket.gethostname())) \
-            + "_" + str(os.getpid()) + "_"
-        self.requestid_suffix = random.randrange(0, 1000000000)
-        #self.requestid = 0
-        self.requestid_lock = threading.Lock()
+    def __init__(self, config_file):
+        try:
+            self.config_file = config_file
+            self.config = dict()
+            execfile(config_file, dict(), self.config)
 
-        self.log = Util.Log(prefix = "PAFClient")
+            self.requestid_prefix = str(socket.gethostbyname(socket.gethostname())) \
+                + "_" + str(os.getpid()) + "_"
+            self.requestid_suffix = random.randrange(0, 1000000000)
+            #self.requestid = 0
+            self.requestid_lock = threading.Lock()
 
-        #为了使用名字查找代理
-        #self.proxy["server_name"][(ip, port)] = proxy
-        self.proxy = {}
-        #为了使用socket查找代理
-        #self.connections[fileno] = proxy
-        self.connections = {}
-        #连接锁,用于对以上两个变量做同步操作
-        self.connect_lock = threading.Lock()
+            self.log = Util.Log(prefix = "PAFClient")
 
-        self.epoll = select.epoll()
+            #为了使用名字查找代理
+            #self.proxy["server_name"][(ip, port)] = proxy
+            self.proxy = {}
+            #为了使用socket查找代理
+            #self.connections[fileno] = proxy
+            self.connections = {}
+            #连接锁,用于对以上两个变量做同步操作
+            self.connect_lock = threading.Lock()
 
-        self.termination = False
+            self.epoll = select.epoll()
 
-        #response返回错误码,需要与PAFServer对应
-        self.RESPONSE = dict()
-        self.RESPONSE["E_OK"] = 0
-        self.RESPONSE["E_CLOSE"] = -1 #标识需要断开链接
-        self.RESPONSE["E_TIMEOUT"] = -2 #超时
-        self.RESPONSE["E_CONNECTRESET"] = -3 #链接断开
-        self.RESPONSE["E_UNKNOWN"] = -99  #不可知错误
-        self.RESPONSE["E_WAIT"] = -10000    #初始化状态,正在等待服务端返回
+            self.termination = False
 
-        #同步请求使用的等待锁
-        #self.request[requestid]["lock"] = threading.Lock()
-        #请求所在链接
-        #self.request[requestid]["connect"] = fileno
-        #请求发送时间
-        #self.request[requestid]["time"] = int(time.time())
-        #异步回调函数
-        #self.request[requestid]["callback"] = callback
-        #请求返回,用于异步
-        #self.request[requestid]["return"] = 0      #返回值,正常处理返回0,否则返回错误号
-        #self.request[requestid]["message"] = ""    #错误信息
-        #self.request[requestid]["result"] = None   #处理函数返回值
-        self.request = {}
-        self.request_lock = threading.Lock()
+            #response返回错误码,需要与PAFServer对应
+            self.RESPONSE = dict()
+            self.RESPONSE["E_OK"] = 0
+            self.RESPONSE["E_CLOSE"] = -1 #标识需要断开链接
+            self.RESPONSE["E_TIMEOUT"] = -2 #超时
+            self.RESPONSE["E_CONNECTRESET"] = -3 #链接断开
+            self.RESPONSE["E_UNKNOWN"] = -99  #不可知错误
+            self.RESPONSE["E_WAIT"] = -10000    #初始化状态,正在等待服务端返回
 
-        #事件线程与回调线程队列
-        self.response_queue = Queue.Queue(maxsize = 0)
-        self.condition = threading.Condition()
+            #同步请求使用的等待锁
+            #self.request[requestid]["lock"] = threading.Lock()
+            #请求所在链接
+            #self.request[requestid]["connect"] = fileno
+            #请求发送时间
+            #self.request[requestid]["time"] = int(time.time())
+            #异步回调函数
+            #self.request[requestid]["callback"] = callback
+            #请求返回,用于异步
+            #self.request[requestid]["return"] = 0      #返回值,正常处理返回0,否则返回错误号
+            #self.request[requestid]["message"] = ""    #错误信息
+            #self.request[requestid]["result"] = None   #处理函数返回值
+            self.request = {}
+            self.request_lock = threading.Lock()
 
-        #回调线程
-        self.callbacks = []
-        self.callback_count = callbackcount
-        index = 0
-        while index < callbackcount:
-            self.callbacks.append(CallBackThread())
-            self.callbacks[index].setClient(self)
-            self.callbacks[index].setDaemon(True)
-            if setup_pipe:
-                self.callbacks[index].setupPipe()
-            self.callbacks[index].start()
-            index += 1
+            #事件线程与回调线程队列
+            self.response_queue = Queue.Queue(maxsize = 0)
+            self.condition = threading.Condition()
 
-        #启动事件处理线程
-        self.event_thread = EventThread()
-        self.event_thread.setClient(self)
-        self.event_thread.setDaemon(True)
-        self.event_thread.start()
+            #回调线程
+            self.callbacks = []
+            for index in range(0, self.config["Client"].CALLBACK_COUNT):
+                self.callbacks.append(CallBackThread())
+                self.callbacks[index].setClient(self)
+                self.callbacks[index].setDaemon(True)
+                if self.config["Public"].USE_PIPE:
+                    self.callbacks[index].setupPipe()
+                self.callbacks[index].start()
+
+            #启动事件处理线程
+            self.event_thread = EventThread()
+            self.event_thread.setClient(self)
+            self.event_thread.setDaemon(True)
+            self.event_thread.start()
+        except BaseException as e:
+            print("init error " + str(e))
+            os._exit(0)
 
     def terminate(self):
         """
         停止
         """
         self.termination = True
+        #等待所有线程停止
+        for index in range(0, self.config["Client"].CALLBACK_COUNT):
+            self.callbacks[index].join()
+        self.event_thread.join()
         
     def getRequestId(self):
         """
@@ -457,7 +466,7 @@ class EventThread(threading.Thread):
                 return
             
             #disconnect中会执行 del self.client.connections[fileno]
-            #不确实会不会有问题,使用一个临时变量保证对象可用
+            #不确定会不会有问题,使用一个临时变量保证对象可用
             proxy = self.client.connections[fileno]
             proxy.disconnect(fileno)
             self.client.log.Print("%d closed" % fileno)
@@ -470,8 +479,10 @@ class EventThread(threading.Thread):
         """
         try:
             while True:
+                if self.client.termination == True:
+                    return 0
                 try:
-                    events = self.client.epoll.poll(2)
+                    events = self.client.epoll.poll(0.5)
                 except BaseException as e:
                     time.sleep(0.010)
                     continue
@@ -558,6 +569,11 @@ class EventThread(threading.Thread):
 
 
 class CallBackThread(threading.Thread):
+    def __init__(self):
+        threading.Thread.__init__(self)
+        self.sys_clnt_p = None
+        self.cmd_clnt_p = None
+
     """ 异步回调线程 """
     def setClient(self, client):
         """
@@ -599,13 +615,14 @@ class CallBackThread(threading.Thread):
                     self.client.log.Print("condition acquire error")
                     continue
 
-                self.client.condition.wait(2)
+                self.client.condition.wait(0.5)
                 self.client.condition.release()
-                if self.client.termination:
-                    self.sys_clnt_p.send("bcloud:exit")
-                    self.cmd_clnt_p.send("bcloud:exit")
-                    self.p_sys.join()
-                    self.p_cmd.join()
+                if self.client.termination == True:
+                    if self.sys_clnt_p is not None:
+                        self.sys_clnt_p.send("bcloud:exit")
+                        self.cmd_clnt_p.send("bcloud:exit")
+                        self.p_sys.join()
+                        self.p_cmd.join()
                     return True
                         
                 while True:
@@ -627,7 +644,6 @@ class CallBackThread(threading.Thread):
                         self.client.request_lock.release()
 
                     try:
-
                         #同步调用
                         if request["callback"] is None: 
                             continue
@@ -680,68 +696,82 @@ if __name__ == "__main__":
             """
             callback
             """
+            print "###############################"
             if ret[0] < 0:
                 print ret[1]
             else:
                 print result
 
-    client = PAFClient()
+    client = PAFClient("config_tmplate.py")
     #createProxy 可能会抛出异常
     try:
         t = client.createProxy("test", ('127.0.0.1', 8412))
     except BaseException as e:
         print e
         exit(0)
-    try:
+
+    print "###############################"
+    try:#系统默认接口
         print t.ping()
     except BaseException as e:
         print e
-    try:
-        print t.queue_len()
+
+    print "###############################"
+    try:#队列长度系统默认接口
+        print t.queueLen()
     except BaseException as e:
         print e
-    try:
+
+    print "###############################"
+    try:#单向调用,同步调用不能使用单向调用
         print t.async_unidirectional("unidirectional", None)
     except BaseException as e:
         print e
 
-    try:  #request 1
+    print "###############################"
+    try:#不存在函数
         print t.nofun(" world")
     except BaseException as e:
         print e
 
-    try:  #request 2
+    print "###############################"
+    try:#参数数量错误
         print t.sayHello(" world")
     except BaseException as e:
         print e
 
-    try:  #request 3
+    print "###############################"
+    try:#正确调用
         print t.sayHello(" world", " sync")
     except BaseException as e:
         print e
 
-    try:  #request 4
-        t.async_nofun(" world", CallbackSayHello())
-    except BaseException as e:
-        print e
-
-    try:  #request 5
-        t.async_sayHello(" world", CallbackSayHello())
-    except BaseException as e:
-        print e
-
-    try:  #request 6
-        t.async_sayHello(" world", " async", Callback_SayHello())
-    except BaseException as e:
-        print e
-
-    try:  #request 7
+    print "###############################"
+    try:#函数抛出异常调用
         t.throwException()
     except BaseException as e:
         print e
 
+    try:#异步不存在函数调用
+        t.async_nofun(" world", CallbackSayHello())
+    except BaseException as e:
+        print e
+
+    try:#异步参数错误调用
+        t.async_sayHello(" world", CallbackSayHello())
+    except BaseException as e:
+        print e
+
+    try:#异步正确调用
+        t.async_sayHello(" world", " async", CallbackSayHello())
+    except BaseException as e:
+        print e
+
+    #结束所有线程,在客户端不再使用时一定要调用
+    t.terminate()
+
     #要等待异步返回
     try:
-        time.sleep(100)
+        time.sleep(2)
     except BaseException as e:
         print str(e)
