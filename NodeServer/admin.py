@@ -21,7 +21,7 @@ sys.path.insert(0, bcloud_dir)
 import Util
 import PAF
 
-client = PAF.PAFClient.PAFClient("config.py")
+client = PAF.PAFClient.PAFClient(os.path.join(os.path.dirname(__file__), 'config.py'))
 t = client.createProxy("Node", ('127.0.0.1', 9999))
 
 print sys.argv[1]
@@ -32,8 +32,8 @@ if sys.argv[1] == "deploy":
     server_dir = os.path.abspath(os.path.dirname(sys.argv[2]))
     
     tar_name = os.path.join(server_dir, \
-                            "%s.%s.tar.bz2" % (os.path.basename(server_dir), time.time()))
-    os.system("cd %s;tar -cjf %s PAF Util %s" % (os.path.dirname(server_dir), tar_name, os.path.basename(server_dir)))
+                            "%s.%s.zip" % (os.path.basename(server_dir), time.time()))
+    os.system("cd %s;zip -r %s PAF Util %s" % (os.path.dirname(server_dir), tar_name, os.path.basename(server_dir)))
     with open(tar_name, "rb") as f:
         data = f.read()
     item = "%s.%s.%s" % (config["Server"].NAMESPACE, \

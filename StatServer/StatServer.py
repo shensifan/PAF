@@ -30,8 +30,8 @@ class Stat(PAF.PAFServer.PAFServerObj):
         return True
 
 #========================================================================================================
-
+config_file = os.path.join(os.path.abspath(os.path.dirname(__file__)), "config.py")
 if __name__ == "__main__":
     #启动server
-    server = PAF.PAFServer.PAFServer(Stat(), 'config.py')
+    server = PAF.PAFServer.PAFServer(Stat(), config_file)
     server.start()

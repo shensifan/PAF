@@ -51,7 +51,7 @@ class Public(object):
     #调用统计服务
     #STAT_SERVER = "EE.PAF.stat"
     #使用多进程工作，多进程间使用pipe通信
-    USE_PIPE = True
+    USE_PIPE = False
 
 ################服务自身配置########################
 class Private(object):

@@ -146,7 +146,7 @@ class PAFServer():
                     self.config["Server"].APPLICATION, \
                     self.config["Server"].SERVICE)
         try:
-            self.register(item)
+            self.node_server.register(item)
         except BaseException as e:
             self.log.Print("register error " + str(e))
             return -1
@@ -164,16 +164,17 @@ class PAFServer():
             return -1
 
 #        try:
-#            if "LOG_SERVER" in self.config["Server"] and self.config["Server"].LOG_SERVER != None:
+#            if hasattr(self.config["Server"], "LOG_SERVER" ) and self.config["Server"].LOG_SERVER != None:
 #                self.log_server = self.client.createProxy('LOGSERVER', self.config["Server"].LOG_SERVER)
 #        except BaseException as e:
 #            self.log.Print("no connect to LogServer")
 
         try:
-            if "NODE_SERVER" in self.config["Server"] and self.config["Server"].NODE_SERVER != None:
+            if hasattr(self.config["Server"], "NODE_SERVER") and self.config["Server"].NODE_SERVER != None:
                 self.node_server = self.client.createProxy('NODESERVER', self.config["Server"].NODE_SERVER)
         except BaseException as e:
-            self.log.Print("no connect to NodeServer")
+            traceback.print_exc()
+            self.log.Print("no connect to NodeServer %s" % str(e))
 
         #启动工作/回复线程
         try:

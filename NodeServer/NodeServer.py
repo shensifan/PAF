@@ -18,6 +18,7 @@ description:结点服务功能如下:
             4.向register注册服务
 Authors: shenweizheng(shenweizheng@baidu.com)
 Date:    2014/11/18 17:23:06
+TODO:   状态机不完整，STARTING和STOP等中状态出错不能恢复
 """
 import os
 import sys
@@ -28,11 +29,17 @@ import threading
 import signal
 import types
 import ServerInfo
+import StringIO
+import zipfile
 
 bcloud_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 sys.path.insert(0, bcloud_dir)
 import Util
 import PAF
+
+def SYSTEM(cmd):
+    print cmd
+    os.system(cmd)
 
 def handler(signu, frame):
     try:
@@ -88,7 +95,7 @@ class ServerManager(object):
                                                             server_info.application, \
                                                             server_info.server, \
                                                             server_info.server, \
-                                                            server_info.server)
+                                                            server_info.server + ".py")
         finally:
             self.lock.release()
         
@@ -143,6 +150,15 @@ class ServerManager(object):
             return self.server[server_info]["path"]
         finally:
             self.lock.release()
+
+    def deployPath(self, server_info):
+        return os.path.join(self.server_root, \
+                            server_info.namespace, \
+                            server_info.application, \
+                            server_info.server)
+
+    def backupRoot(self):
+        return self.backup_root
 
     def stop(self, server_info, PAFServer, current):
         self.lock.acquire()
@@ -211,8 +227,14 @@ class Node(PAF.PAFServer.PAFServerObj):
         return True
 
     def start(self, server_info, current):
+        print "start %s" % server_info
         if type(server_info) is types.StringType:
             server_info = ServerInfo.ServerInfo(server_info)
+
+        #启动server
+        if not os.path.exists(sm.serverFile(server_info)):
+            return "no this file %s" % sm.serverFile(server_info)
+
         (old, new) = sm.cmpAndChange(server_info, ServerManager.STAT_STOP, ServerManager.STAT_STARTING)
         if old == ServerManager.STAT_NONE:
             return "no this server %s" % server_info
@@ -220,10 +242,6 @@ class Node(PAF.PAFServer.PAFServerObj):
             return "%s stat is %s" % (server_info, old)
         if old == ServerManager.STAT_STARTING:
             return "%s has starting" % (server_info)
-
-        #启动server
-        if not os.path.exists(sm.serverFile(server_info)):
-            return "no this file %s" % sm.serverFile(server_info)
 
         pid = os.fork()
         if pid == 0:
@@ -236,6 +254,7 @@ class Node(PAF.PAFServer.PAFServerObj):
             return "OK"
 
     def stop(self, server_info, current):
+        print "stop %s" % server_info
         if type(server_info) is types.StringType:
             server_info = ServerInfo.ServerInfo(server_info)
         (old, new) = sm.cmpAndChange(server_info, ServerManager.STAT_RUN, ServerManager.STAT_STOPING)
@@ -260,21 +279,19 @@ class Node(PAF.PAFServer.PAFServerObj):
             return "False"
 
         #删除代码
-        deploy_path = os.path.join(self.server_root, \
-                                    server_info.namespace, \
-                                    server_info.application, \
-                                    server_info.server)
+        deploy_path = sm.deployPath(server_info)
         if os.path.exists(deploy_path):
-            backup_path = os.path.join(self.backup_root, "%s_%s.tar.bz2" % (server_info.server, time.time()))
+            backup_path = os.path.join(sm.backupRoot(), "%s_%s.tar.bz2" % (server_info.server, time.time()))
             os.system("cd %s;tar -cjf %s.tar.bz2 *" % (deploy_path, backup_path))
             os.system("rm -rf %s/*" % deploy_path)
         else:
             Util.common.mkdirs(deploy_path)
         
         #解压服务,重新部署
-        with open("%s/%s.tar.bz2" % (deploy_path, server_info.server), "wb") as f:
-            f.write(data)
-        os.system("cd %s;tar -xjf %s.tar.bz2 *" % (deploy_path, server_info.server))
+        d = StringIO.StringIO()
+        d.write(data)
+        z = zipfile.ZipFile(d, "r")
+        z.extractall(deploy_path)
 
         #更新状态
         (old, new) = sm.cmpAndChange(server_info, ServerManager.STAT_DEPLOY, ServerManager.STAT_STOP)
@@ -287,11 +304,13 @@ class Node(PAF.PAFServer.PAFServerObj):
         return "OK"
 
     def status(self, server_info, current):
+        print "status %s" % server_info
         if type(server_info) is types.StringType:
             server_info = ServerInfo.ServerInfo(server_info)
         return sm.status(server_info)
 
     def list(self, current):
+        print "list"
         return sm.list()
 
     def remove(self, server_info, current):

@@ -18,7 +18,7 @@ class Server(object):
     #app名称
     APPLICATION = "PAF"
     #服务名称
-    SERVICE = "statServer"
+    SERVICE = "StatServer"
     #服务分组,服务内分组,用于区分IDC或者做set
     #GROUP = None
     #工作线程数量
@@ -51,7 +51,7 @@ class Public(object):
     #调用统计服务
     #STAT_SERVER = "EE.PAF.stat"
     #使用多进程工作，多进程间使用pipe通信
-    USE_PIPE = True
+    USE_PIPE = False
 
 ################服务自身配置########################
 class Private(object):
