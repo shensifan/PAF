@@ -29,8 +29,6 @@ import signal
 import types
 import ServerInfo
 
-import config
-
 bcloud_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 sys.path.insert(0, bcloud_dir)
 import Util
@@ -252,6 +250,10 @@ class Node(PAF.PAFServer.PAFServerObj):
         return None
 
     def deploy(self, server_info, data, current):
+        """
+        部署服务
+        TODO:需要校验部署位置是否与config中写的一样
+        """
         if type(server_info) is types.StringType:
             server_info = ServerInfo.ServerInfo(server_info)
         if not sm.deploy(server_info):
@@ -270,7 +272,7 @@ class Node(PAF.PAFServer.PAFServerObj):
             Util.common.mkdirs(deploy_path)
         
         #解压服务,重新部署
-        with open("%s/%s.tar.bz2" % (deploy_path, server_info.server)) as f:
+        with open("%s/%s.tar.bz2" % (deploy_path, server_info.server), "wb") as f:
             f.write(data)
         os.system("cd %s;tar -xjf %s.tar.bz2 *" % (deploy_path, server_info.server))
 
