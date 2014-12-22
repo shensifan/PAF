@@ -146,7 +146,7 @@ class PAFServer():
                     self.config["Server"].APPLICATION, \
                     self.config["Server"].SERVICE)
         try:
-            self.node_server.register(item)
+            self.node_server.register(item, os.getpid())
         except BaseException as e:
             self.log.Print("register error " + str(e))
             return -1

@@ -55,4 +55,4 @@ class Public(object):
 
 ################服务自身配置########################
 class Private(object):
-    pass
+    PYTHON = "/usr/bin/python"

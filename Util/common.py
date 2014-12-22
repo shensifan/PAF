@@ -140,3 +140,16 @@ def getFileWithHttp(ip, port, remote_path, local_path):
             f.close()
 
     return True
+
+def closeFd():
+    allfd = os.listdir("/proc/%d/fd" % os.getpid())
+    for fd in allfd:
+        fd = int(fd)
+        if fd < 3:
+            continue
+        try:
+            os.close(fd)
+        except Exception as e:
+            pass
+
+    allfd = os.listdir("/proc/%d/fd" % os.getpid())

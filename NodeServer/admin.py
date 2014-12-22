@@ -33,6 +33,7 @@ if sys.argv[1] == "deploy":
     
     tar_name = os.path.join(server_dir, \
                             "%s.%s.zip" % (os.path.basename(server_dir), time.time()))
+    os.system("cd %s;rm -f %s.*.zip" % (server_dir, os.path.basename(server_dir)))
     os.system("cd %s;zip -r %s PAF Util %s" % (os.path.dirname(server_dir), tar_name, os.path.basename(server_dir)))
     with open(tar_name, "rb") as f:
         data = f.read()
@@ -51,7 +52,8 @@ if sys.argv[1] == "stop":
     pprint.pprint("stop " + t.stop(sys.argv[2]))
 
 if sys.argv[1] == "list":
-    pprint.pprint("list" + str(t.list()))
-
+    a = t.list()
+    for i in a:
+        pprint.pprint(a[i])
 
 client.terminate()
