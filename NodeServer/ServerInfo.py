@@ -13,7 +13,10 @@
 import re
 
 class ServerInfo(object):
-    def __init__(self, namespace, application = None, server = None):
+    """
+    服务描述
+    """
+    def __init__(self, namespace, application=None, server=None):
         if application is None or server is None:
             column = re.split("\.", namespace)
             if len(column) != 3:

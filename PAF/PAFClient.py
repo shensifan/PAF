@@ -23,7 +23,7 @@ class PAFClient():
         try:
             self.config_file = config_file
             self.config = dict()
-            execfile(config_file, dict(), self.config)
+            execfile(config_file, self.config)
 
             self.requestid_prefix = str(socket.gethostbyname(socket.gethostname())) \
                 + "_" + str(os.getpid()) + "_"

@@ -141,6 +141,7 @@ def getFileWithHttp(ip, port, remote_path, local_path):
 
     return True
 
+
 def closeFd():
     allfd = os.listdir("/proc/%d/fd" % os.getpid())
     for fd in allfd:
@@ -153,3 +154,34 @@ def closeFd():
             pass
 
     allfd = os.listdir("/proc/%d/fd" % os.getpid())
+
+
+def _getUsedPort():
+    ports = list()
+    ret, msg = runCommand("netstat -ant")
+    if ret != 0:
+        return ports
+    lines = re.split("\n", msg)
+    for i in range(0, len(lines)):
+        if not lines[i].startswith("tcp"):
+            continue
+        column = re.split("\s*", lines[i])
+        if column[0] != "tcp":
+            continue
+        port = re.split(":", column[3])[1]
+        ports.append(port)
+    return ports
+
+
+def getFreePort(range_min, range_max):
+    """
+    得到一个没有使用的端口
+    """
+    used_port = _getUsedPort()
+    while True:
+        port = random.randrange(range_min, range_max)
+        if port in used_port:
+            continue
+        break
+
+    return port

@@ -26,7 +26,7 @@ class PAFServer():
 
             self.config_file = config_file
             self.config = dict()
-            execfile(config_file, dict(), self.config)
+            execfile(config_file, self.config)
 
             self.epoll = select.epoll()
 
@@ -70,16 +70,23 @@ class PAFServer():
             self.node_server = None
             #self.stat_server = None
         except BaseException as e:
+            traceback.print_exc()
             print("init error " + str(e))
             os._exit(0)
 
     def setConfig(self, conf, name, value):
+        """
+        设置配置
+        """
         if conf not in self.config:
             self.config[conf] = dict()
         self.config[conf].name = value
         return 0
 
     def getConfig(self, conf):
+        """
+        查询配置
+        """
         if conf not in self.config:
             return None
 
@@ -97,7 +104,6 @@ class PAFServer():
             return -1
 
         return 0
-
 
     def _initServer(self):
         try:
@@ -170,8 +176,10 @@ class PAFServer():
 #            self.log.Print("no connect to LogServer")
 
         try:
-            if hasattr(self.config["Server"], "NODE_SERVER") and self.config["Server"].NODE_SERVER != None:
-                self.node_server = self.client.createProxy('NODESERVER', self.config["Server"].NODE_SERVER)
+            if hasattr(self.config["Server"], "NODE_SERVER") and \
+                    self.config["Server"].NODE_SERVER is not None:
+                self.node_server = self.client.createProxy('NODESERVER', \
+                                    self.config["Server"].NODE_SERVER)
         except BaseException as e:
             traceback.print_exc()
             self.log.Print("no connect to NodeServer %s" % str(e))

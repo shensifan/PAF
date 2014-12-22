@@ -23,6 +23,9 @@ sys.path.insert(0, bcloud_dir)
 import Util
 
 class ServerManager(threading.Thread):
+    """
+    服务管理类
+    """
     STAT_NONE = "NONE"      #服务不在管理中
     STAT_DEPLOY = "DEPLOY"     #服务正在部署
     STAT_STOP = "STOP"       #服务停止
@@ -61,6 +64,9 @@ class ServerManager(threading.Thread):
         self.termination = False
 
     def deploy(self, server_info):
+        """
+        部署
+        """
         self.lock.acquire()
         try:
             if server_info in self.server and self.server[server_info]["state"] != self.STAT_STOP:
@@ -85,6 +91,9 @@ class ServerManager(threading.Thread):
         return True
 
     def status(self, server_info):
+        """
+        状态查询
+        """
         self.lock.acquire()
         try:
             if server_info in self.server:
@@ -101,6 +110,9 @@ class ServerManager(threading.Thread):
             self.lock.release()
     
     def list(self):
+        """
+        返回所有server信息
+        """
         self.lock.acquire()
         try:
             return self.server
@@ -125,6 +137,9 @@ class ServerManager(threading.Thread):
             self.lock.release()
         
     def serverFile(self, server_info):
+        """
+        返回服务执行文件
+        """
         self.lock.acquire()
         try:
             if server_info not in self.server:
@@ -135,15 +150,24 @@ class ServerManager(threading.Thread):
             self.lock.release()
 
     def deployPath(self, server_info):
+        """
+        得到部署目录
+        """
         return os.path.join(self.server_root, \
                             server_info.namespace, \
                             server_info.application, \
                             server_info.server)
 
     def backupRoot(self):
+        """
+        得到备份目录
+        """
         return self.backup_root
 
     def stop(self, server_info, PAFServer, current):
+        """
+        停止
+        """
         self.lock.acquire()
         try:
             if self.server[server_info]["pid"] in self.pids:
@@ -162,6 +186,9 @@ class ServerManager(threading.Thread):
             self.lock.release()
 
     def serverStop(self, pid):
+        """
+        停止
+        """
         self.lock.acquire()
         try:
             if pid not in self.pids:
@@ -208,6 +235,9 @@ class ServerManager(threading.Thread):
         return True
 
     def setPid(self, server_info, pid):
+        """
+        设置进程ID
+        """
         self.lock.acquire()
         try:
             if server_info not in self.server:
@@ -222,6 +252,9 @@ class ServerManager(threading.Thread):
         return True
 
     def heartBit(self, server_info, pid):
+        """
+        心跳
+        """
         self.lock.acquire()
         try:
             if server_info not in self.server:
@@ -236,9 +269,15 @@ class ServerManager(threading.Thread):
         return True
 
     def terminate(self):
+        """
+        结束
+        """
         self.termination = True
 
     def reload(self):
+        """
+        重新加载已经部署服务
+        """
         for namespace in os.listdir(self.server_root):
             for application in os.listdir(os.path.join(self.server_root, namespace)):
                 for service in os.listdir(os.path.join(self.server_root, namespace, application)):
@@ -247,7 +286,6 @@ class ServerManager(threading.Thread):
                                                         service)
                     self.deploy(server_info)
                     self.cmpAndChange(server_info, self.STAT_DEPLOY, self.STAT_STOP)
-
 
     def run(self):
         while self.termination == False:

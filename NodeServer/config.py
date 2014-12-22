@@ -12,6 +12,7 @@
     Desc    :   node server配置文件
 """
 ################服务端配置###########################
+import socket
 class Server(object):
     #命名空间,用于区分部门或者分组
     NAMESPACE = "EE"
@@ -28,7 +29,7 @@ class Server(object):
     #队列超时时间,在队列中呆时间过长后丢包
     #QUEUE_TIME_OUT
     #服务端口
-    LISTEN_IP = "127.0.0.1"
+    LISTEN_IP = socket.gethostbyname(socket.gethostname())
     LISTEN_PORT = 9999
     #本地日志路径
     LOG_PATH = "./log"

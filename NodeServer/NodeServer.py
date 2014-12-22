@@ -43,10 +43,19 @@ import Util
 import PAF
 
 class Node(PAF.PAFServer.PAFServerObj):
+    """
+    node server
+    """
     def init(self):
+        """
+        初始化
+        """
         return True
 
     def start(self, server_info, current):
+        """
+        启动
+        """
         print "start %s" % server_info
         if type(server_info) is types.StringType:
             server_info = ServerInfo.ServerInfo(server_info)
@@ -71,13 +80,17 @@ class Node(PAF.PAFServer.PAFServerObj):
             Util.common.closeFd()
             #execl("程序文件", argv[0], argv[1], ...)
             #argv[0]相当于在ps中显示出来的名字
-            os.execl(self.server.config["Private"].PYTHON, str(server_info), sm.serverFile(server_info))
+            os.execl(self.server.config["Private"].PYTHON, \
+                    str(server_info), sm.serverFile(server_info))
             os._exit(0)
         else:
             sm.setPid(server_info, pid)
             return "OK"
 
     def stop(self, server_info, current):
+        """
+        停止
+        """
         print "stop %s" % server_info
         if type(server_info) is types.StringType:
             server_info = ServerInfo.ServerInfo(server_info)
@@ -131,21 +144,31 @@ class Node(PAF.PAFServer.PAFServerObj):
         return "OK"
 
     def status(self, server_info, current):
+        """
+        查询状态
+        """
         print "status %s" % server_info
         if type(server_info) is types.StringType:
             server_info = ServerInfo.ServerInfo(server_info)
         return sm.status(server_info)
 
     def list(self, current):
+        """
+        得到全部server
+        """
         print "list"
         return sm.list()
 
     def remove(self, server_info, current):
+        """
+        移除
+        """
         pass
-    
-    ####################################
 
     def register(self, server_info, pid, current):
+        """
+        注册
+        """
         if type(server_info) is types.StringType:
             server_info = ServerInfo.ServerInfo(server_info)
         #(old, new) = sm.cmpAndChange(server_info, \
@@ -162,6 +185,9 @@ class Node(PAF.PAFServer.PAFServerObj):
 #========================================================================================================
 
 def handler(signu, frame):
+    """
+    SIGCHILD
+    """
     try:
         (pid, ret) = os.wait()
         sm.serverStop(pid)
@@ -177,6 +203,6 @@ if __name__ == "__main__":
     sm.start()
 
     #启动server
-    server = PAF.PAFServer.PAFServer(Node(), 'config.py')
+    server = PAF.PAFServer.PAFServer(Node(), os.path.join(os.path.dirname(__file__), 'config.py'))
     server.start()
     sm.terminate()
